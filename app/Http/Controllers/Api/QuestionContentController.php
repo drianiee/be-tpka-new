@@ -8,7 +8,6 @@ use App\Models\Question;
 use App\Models\QuestionPackage;
 use App\Services\QuestionBankService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
 class QuestionContentController extends Controller
@@ -155,7 +154,7 @@ class QuestionContentController extends Controller
         $path = $data['image']->store('question-images', 'public');
 
         return response()->json([
-            'url' => Storage::disk('public')->url($path),
+            'url' => $request->getSchemeAndHttpHost().'/storage/'.$path,
             'path' => $path,
         ], 201);
     }
@@ -172,7 +171,7 @@ class QuestionContentController extends Controller
             'difficulty' => ['nullable', 'string', 'max:100'],
             'score' => ['nullable', 'numeric', 'min:1'],
             'is_active' => ['nullable', 'boolean'],
-            'order_number' => ['required', 'integer', 'min:1'],
+            'order_number' => ['nullable', 'integer', 'min:1'],
             'options' => ['required', 'array', 'size:4'],
             'options.*.option_label' => ['required', 'string', 'in:A,B,C,D'],
             'options.*.option_text' => ['nullable', 'string'],

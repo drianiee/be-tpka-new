@@ -27,8 +27,13 @@ class QuestionPackageController extends Controller
     public function store(StoreQuestionPackageRequest $request)
     {
         $package = DB::transaction(function () use ($request) {
-            $package = QuestionPackage::create([...$request->validated(), 'created_by' => $request->user()->id]);
-            $this->questionBank->createDefaultSections($package);
+            $data = $request->validated();
+            $sections = $data['sections'] ?? [];
+            unset($data['sections']);
+            $data['target_total_questions'] = $data['target_total_questions'] ?? ($sections === [] ? collect(QuestionBankService::DEFAULT_SECTIONS)->sum('target_question_count') : collect($sections)->sum('target_question_count'));
+            $data['status'] = 'draft';
+            $package = QuestionPackage::create([...$data, 'created_by' => $request->user()->id]);
+            $this->questionBank->createDefaultSections($package, $sections);
 
             return $package;
         });
@@ -43,7 +48,19 @@ class QuestionPackageController extends Controller
 
     public function update(StoreQuestionPackageRequest $request, QuestionPackage $questionPackage)
     {
-        $questionPackage->update($request->validated());
+        $data = $request->validated();
+        $sections = $data['sections'] ?? [];
+        unset($data['sections']);
+        if ($sections !== []) {
+            $data['target_total_questions'] = $data['target_total_questions'] ?? collect($sections)->sum('target_question_count');
+        }
+        $questionPackage->update($data);
+        foreach ($sections as $section) {
+            $questionPackage->sections()->where('code', $section['code'])->update([
+                'duration_minutes' => $section['duration_minutes'],
+                'target_question_count' => $section['target_question_count'],
+            ]);
+        }
 
         return ['message' => 'Paket diperbarui.', 'data' => $this->questionBank->packagePayload($questionPackage->fresh())];
     }

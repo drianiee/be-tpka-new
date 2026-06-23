@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class QuestionPackage extends Model
 {
-    protected $fillable = ['name', 'description', 'status', 'total_duration_minutes', 'total_questions', 'created_by'];
+    protected $fillable = ['name', 'status', 'total_duration_minutes', 'total_questions', 'target_total_questions', 'created_by'];
 
     public function sections()
     {

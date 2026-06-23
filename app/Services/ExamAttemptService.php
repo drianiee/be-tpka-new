@@ -28,15 +28,21 @@ class ExamAttemptService
         }
 
         return DB::transaction(function () use ($user, $schedule) {
-            $package = $schedule->package()->with(['questions' => fn ($q) => $q->where('is_active', true)->with('options')])->firstOrFail();
+            $package = $schedule->package()->with([
+                'sections' => fn ($q) => $q->orderBy('order_number'),
+                'questions' => fn ($q) => $q->where('is_active', true)->with('options'),
+            ])->firstOrFail();
             throw_if($package->questions->isEmpty(), ValidationException::withMessages(['package' => 'Paket belum memiliki soal aktif.']));
             $attempt = ExamAttempt::create(['user_id' => $user->id, 'schedule_id' => $schedule->id, 'question_package_id' => $package->id, 'status' => 'in_progress', 'started_at' => now(), 'expires_at' => now()->addMinutes($package->total_duration_minutes)]);
-            foreach ($package->questions as $question) {
-                $attempt->attemptQuestions()->create([
-                    'question_id' => $question->id, 'exam_section_id' => $question->exam_section_id, 'order_number' => $question->order_number,
-                    'snapshot_question_text' => $question->question_text, 'snapshot_question_image' => $question->question_image,
-                    'snapshot_options' => $question->options->map(fn ($o) => ['id' => $o->id, 'option_label' => $o->option_label, 'option_text' => $o->option_text, 'option_image' => $o->option_image])->values()->all(),
-                ]);
+            foreach ($package->sections as $section) {
+                $sectionQuestions = $package->questions->where('exam_section_id', $section->id)->shuffle()->values();
+                foreach ($sectionQuestions as $index => $question) {
+                    $attempt->attemptQuestions()->create([
+                        'question_id' => $question->id, 'exam_section_id' => $question->exam_section_id, 'order_number' => $index + 1,
+                        'snapshot_question_text' => $question->question_text, 'snapshot_question_image' => $question->question_image,
+                        'snapshot_options' => $question->options->shuffle()->map(fn ($o) => ['id' => $o->id, 'option_label' => $o->option_label, 'option_text' => $o->option_text, 'option_image' => $o->option_image])->values()->all(),
+                    ]);
+                }
             }
             AttemptEvent::create(['exam_attempt_id' => $attempt->id, 'type' => 'started']);
 

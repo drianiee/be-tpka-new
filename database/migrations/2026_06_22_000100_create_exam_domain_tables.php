@@ -11,7 +11,6 @@ return new class extends Migration
         Schema::create('question_packages', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->text('description')->nullable();
             $table->enum('status', ['draft', 'published', 'archived'])->default('draft');
             $table->unsignedInteger('total_duration_minutes')->default(0);
             $table->unsignedInteger('total_questions')->default(0);

@@ -13,6 +13,14 @@ class StoreQuestionPackageRequest extends FormRequest
 
     public function rules(): array
     {
-        return ['name' => ['required', 'string', 'max:255'], 'description' => ['nullable', 'string'], 'status' => ['sometimes', 'in:draft,published,archived'], 'total_duration_minutes' => ['required', 'integer', 'min:1']];
+        return [
+            'name' => ['required', 'string', 'max:255'],
+            'total_duration_minutes' => ['required', 'integer', 'min:1'],
+            'target_total_questions' => ['nullable', 'integer', 'min:0'],
+            'sections' => ['nullable', 'array'],
+            'sections.*.code' => ['required_with:sections', 'in:verbal,kuantitatif,logika,spasial'],
+            'sections.*.duration_minutes' => ['required_with:sections', 'integer', 'min:1'],
+            'sections.*.target_question_count' => ['required_with:sections', 'integer', 'min:0'],
+        ];
     }
 }

@@ -12,10 +12,10 @@ use Illuminate\Validation\ValidationException;
 class QuestionBankService
 {
     public const DEFAULT_SECTIONS = [
-        ['code' => 'verbal', 'name' => 'Verbal', 'order_number' => 1],
-        ['code' => 'kuantitatif', 'name' => 'Kuantitatif', 'order_number' => 2],
-        ['code' => 'logika', 'name' => 'Logika', 'order_number' => 3],
-        ['code' => 'spasial', 'name' => 'Spasial', 'order_number' => 4],
+        ['code' => 'verbal', 'name' => 'Verbal', 'order_number' => 1, 'duration_minutes' => 50, 'target_question_count' => 50],
+        ['code' => 'kuantitatif', 'name' => 'Kuantitatif', 'order_number' => 2, 'duration_minutes' => 40, 'target_question_count' => 70],
+        ['code' => 'logika', 'name' => 'Logika', 'order_number' => 3, 'duration_minutes' => 40, 'target_question_count' => 60],
+        ['code' => 'spasial', 'name' => 'Spasial', 'order_number' => 4, 'duration_minutes' => 20, 'target_question_count' => 20],
     ];
 
     public const IMPORT_COLUMNS = [
@@ -37,17 +37,19 @@ class QuestionBankService
         'explanation',
     ];
 
-    public function createDefaultSections(QuestionPackage $package): void
+    public function createDefaultSections(QuestionPackage $package, array $sectionSettings = []): void
     {
         foreach (self::DEFAULT_SECTIONS as $section) {
+            $setting = collect($sectionSettings)->firstWhere('code', $section['code']) ?? [];
             $package->sections()->firstOrCreate(
                 ['code' => $section['code']],
                 [
                     'name' => $section['name'],
                     'description' => null,
                     'order_number' => $section['order_number'],
-                    'duration_minutes' => 0,
+                    'duration_minutes' => (int) ($setting['duration_minutes'] ?? $section['duration_minutes']),
                     'question_count' => 0,
+                    'target_question_count' => (int) ($setting['target_question_count'] ?? $section['target_question_count']),
                 ],
             );
         }
@@ -67,10 +69,10 @@ class QuestionBankService
         return [
             'id' => $package->id,
             'name' => $package->name,
-            'description' => $package->description,
             'status' => $package->status,
             'total_duration_minutes' => (int) $package->total_duration_minutes,
             'total_questions' => (int) $package->total_questions,
+            'target_total_questions' => (int) $package->target_total_questions,
             'created_by' => $package->created_by,
             'created_at' => $package->created_at?->toISOString(),
             'updated_at' => $package->updated_at?->toISOString(),
@@ -82,6 +84,7 @@ class QuestionBankService
                 'order_number' => (int) $section->order_number,
                 'duration_minutes' => (int) $section->duration_minutes,
                 'question_count' => (int) $section->question_count,
+                'target_question_count' => (int) $section->target_question_count,
                 'questions_count' => (int) ($section->questions_count ?? $section->question_count),
             ])->values(),
             'summary' => $summary,
@@ -130,6 +133,7 @@ class QuestionBankService
         $data['question_image'] = filled($data['question_image'] ?? null) ? $data['question_image'] : null;
         $data['score'] = $data['score'] ?? 1;
         $data['is_active'] = $data['is_active'] ?? true;
+        $data['order_number'] = $data['order_number'] ?? ((int) $section->questions()->max('order_number') + 1);
         $data['options'] = $options->all();
 
         return $data;

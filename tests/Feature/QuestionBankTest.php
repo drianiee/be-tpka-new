@@ -24,8 +24,6 @@ class QuestionBankTest extends TestCase
 
         $response = $this->postJson('/api/question-packages', [
             'name' => 'Paket TPA A',
-            'description' => 'Paket test',
-            'status' => 'draft',
             'total_duration_minutes' => 120,
         ], $headers)->assertCreated();
 
