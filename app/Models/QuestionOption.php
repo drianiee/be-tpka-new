@@ -13,8 +13,6 @@ class QuestionOption extends Model
         return ['is_correct' => 'boolean'];
     }
 
-    protected $hidden = ['is_correct'];
-
     public function question()
     {
         return $this->belongsTo(Question::class);

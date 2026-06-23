@@ -4,10 +4,29 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Certificate;
+use App\Services\CertificateDataService;
 use Illuminate\Http\Request;
 
 class CertificateController extends Controller
 {
+    public function __construct(private CertificateDataService $certificateData) {}
+
+    public function data(string $uuid)
+    {
+        $data = $this->certificateData->fromIdentifier($uuid);
+        abort_unless($data, 404, 'Sertifikat tidak ditemukan.');
+
+        return ['message' => 'Sertifikat valid.', 'data' => $data];
+    }
+
+    public function pdf(string $uuid)
+    {
+        $data = $this->certificateData->fromIdentifier($uuid);
+        abort_unless($data, 404, 'Sertifikat tidak ditemukan.');
+
+        return response()->json(['message' => 'Generator PDF sertifikat belum tersedia.', 'data' => $data], 501);
+    }
+
     public function index()
     {
         return ['data' => Certificate::latest()->get()];

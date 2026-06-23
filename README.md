@@ -1,30 +1,246 @@
 # Backend TPA
 
-Laravel API untuk exam engine internal TPA.
+Laravel API untuk sistem TPA internal tanpa Moodle. Backend ini menjadi exam engine sendiri: jadwal, paket soal, attempt, autosave jawaban, submit, scoring, dan data sertifikat membaca database internal.
 
-## Menjalankan
+## Instalasi
 
 ```bash
 composer install
 cp .env.example .env
 php artisan key:generate
-php artisan migrate --seed
+```
+
+## Setup `.env`
+
+Contoh konfigurasi MySQL/MariaDB lokal:
+
+```env
+APP_URL=http://127.0.0.1:8000
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+DB_CONNECTION=mysql
+DB_HOST=localhost
+DB_PORT=3306
+DB_DATABASE=tpka
+DB_USERNAME=andrian
+DB_PASSWORD=Nazwa2011
+```
+
+Pastikan database `tpka` sudah ada di MySQL/MariaDB. Untuk menjalankan MariaDB via Homebrew:
+
+```bash
+brew services start mariadb
+```
+
+## Migration dan Seeder
+
+```bash
+php artisan migrate:fresh --seed
+```
+
+Seeder hanya membuat user awal:
+
+- admin
+- operator
+- peserta
+
+## Menjalankan Server
+
+```bash
 php artisan serve
 ```
 
-Konfigurasi database melalui `.env`. SQLite bawaan dapat digunakan untuk development; migration juga kompatibel dengan MySQL/MariaDB dan PostgreSQL.
+Default API berjalan di:
+
+```text
+http://127.0.0.1:8000
+```
 
 ## Akun Demo
 
 Password seluruh akun: `password`.
 
-- `admin@example.com` (`administrator`)
-- `operator@example.com` (`operator`)
-- `peserta@example.com` (`peserta`)
+| Email | Role |
+| --- | --- |
+| `admin@tpka.com` | `administrator` |
+| `operator@tpka.com` | `operator` |
+| `peserta@tpka.com` | `peserta` |
 
-## Batas Tahap Awal
+## Endpoint Penting
 
-- Exam engine, autosave, heartbeat, submit idempoten, dan scoring internal sudah aktif.
-- Integrasi Midtrans mengembalikan `503` sampai kredensial dan verifikasi signature dikonfigurasi.
-- Generator PDF/verifikasi sertifikat, import peserta mitra, dan export XLSX masih endpoint terkontrol dengan pesan yang jelas.
-- CRUD section dan bank soal tersedia melalui API admin; editor visual frontend dapat dilanjutkan pada iterasi berikutnya.
+Auth:
+
+- `POST /api/auth/login`
+- `POST /api/auth/register`
+- `GET /api/me`
+- `POST /api/logout`
+
+Dashboard:
+
+- `GET /api/dashboard`
+- `GET /api/dashboard/revenue-chart`
+- `GET /api/dashboard/participants-chart`
+
+Schedule dan paket soal:
+
+- `GET /api/schedules`
+- `GET /api/schedules/{id}`
+- `GET /api/question-packages`
+- `GET /api/question-packages/{id}`
+
+Peserta:
+
+- `GET /api/participant/schedules`
+- `POST /api/participant/schedules/{scheduleId}/register`
+- `GET /api/participant/my-schedules`
+- `GET /api/participant/my-schedules/{scheduleId}`
+- `GET /api/participant/scores`
+
+Exam engine internal:
+
+- `POST /api/participant/schedules/{scheduleId}/attempts`
+- `GET /api/participant/attempts/{attemptId}`
+- `PUT /api/participant/attempts/{attemptId}/answers/{questionId}`
+- `POST /api/participant/attempts/{attemptId}/answers/batch`
+- `POST /api/participant/attempts/{attemptId}/heartbeat`
+- `POST /api/participant/attempts/{attemptId}/submit`
+- `GET /api/participant/attempts/{attemptId}/result`
+
+Payment dan sertifikat:
+
+- `GET /api/payments`
+- `GET /api/payments/{id}`
+- `GET /api/certificates/data/{uuid}`
+- `GET /api/certificates/pdf/{uuid}`
+
+## Flow Testing Manual
+
+1. Login peserta:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"peserta@tpka.com","password":"password"}'
+```
+
+2. Simpan token dari response, lalu cek user:
+
+```bash
+curl -s http://127.0.0.1:8000/api/me \
+  -H "Authorization: Bearer TOKEN"
+```
+
+3. Lihat jadwal peserta:
+
+```bash
+curl -s http://127.0.0.1:8000/api/participant/my-schedules \
+  -H "Authorization: Bearer TOKEN"
+```
+
+4. Start attempt:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/participant/schedules/1/attempts \
+  -H "Authorization: Bearer TOKEN"
+```
+
+5. Simpan jawaban:
+
+```bash
+curl -s -X PUT http://127.0.0.1:8000/api/participant/attempts/1/answers/1 \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"question_option_id":1}'
+```
+
+6. Submit attempt:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/participant/attempts/1/submit \
+  -H "Authorization: Bearer TOKEN"
+```
+
+7. Lihat result:
+
+```bash
+curl -s http://127.0.0.1:8000/api/participant/attempts/1/result \
+  -H "Authorization: Bearer TOKEN"
+```
+
+## Catatan Implementasi
+
+- Response attempt peserta tidak mengirim `is_correct`.
+- Tidak ada Moodle API client, Moodle user ID, Moodle course ID, Moodle quiz ID, Moodle group, `quiz_url`, atau provisioning Moodle.
+- Scoring dihitung dari `questions` dan `question_options` internal, lalu disimpan ke `exam_scores`.
+- Data certificate berasal dari attempt submitted/expired dan `exam_scores`.
+
+## Paket Soal dan Bank Soal
+
+Saat admin/operator membuat paket soal melalui `POST /api/question-packages`, backend otomatis membuat 4 section:
+
+| Code | Nama | Urutan |
+| --- | --- | --- |
+| `verbal` | Verbal | 1 |
+| `kuantitatif` | Kuantitatif | 2 |
+| `logika` | Logika | 3 |
+| `spasial` | Spasial | 4 |
+
+Endpoint utama:
+
+- `GET /api/question-packages/{id}/sections`
+- `POST /api/question-packages/{id}/sections`
+- `PUT /api/sections/{sectionId}`
+- `DELETE /api/sections/{sectionId}`
+- `GET /api/question-packages/{id}/questions`
+- `POST /api/question-packages/{id}/questions`
+- `GET /api/questions/{questionId}`
+- `PUT /api/questions/{questionId}`
+- `DELETE /api/questions/{questionId}`
+- `GET /api/question-packages/{id}/questions/import-template`
+- `POST /api/question-packages/{id}/questions/import`
+- `POST /api/admin/question-images`
+
+Format CSV import:
+
+```csv
+section_code,order_number,question_text,question_image,option_a_text,option_a_image,option_b_text,option_b_image,option_c_text,option_c_image,option_d_text,option_d_image,correct_option,score,difficulty,explanation
+verbal,1,"Contoh soal verbal",,"Pilihan A",,"Pilihan B",,"Pilihan C",,"Pilihan D",,A,1,mudah,"Pembahasan opsional"
+```
+
+Aturan import:
+
+- `section_code` wajib salah satu: `verbal`, `kuantitatif`, `logika`, `spasial`.
+- `correct_option` wajib `A`, `B`, `C`, atau `D`.
+- Soal wajib memiliki `question_text` atau `question_image`.
+- Setiap opsi A-D wajib memiliki teks atau gambar.
+- Import CSV bersifat all-or-nothing. Jika ada row error, tidak ada row yang disimpan.
+- Gambar tahap awal memakai URL/path di kolom `question_image` dan `option_*_image`.
+
+Upload gambar manual:
+
+```bash
+php artisan storage:link
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/admin/question-images \
+  -H "Authorization: Bearer TOKEN_ADMIN" \
+  -F "image=@/path/to/question.png"
+```
+
+Response:
+
+```json
+{
+  "url": "http://127.0.0.1:8000/storage/question-images/filename.png",
+  "path": "question-images/filename.png"
+}
+```
+
+## TODO
+
+- Integrasi Midtrans nyata dan verifikasi signature callback.
+- Generator PDF sertifikat.
+- Export XLSX peserta/nilai.
+- Import peserta mitra dari file.
+- Import ZIP berisi CSV + folder images.

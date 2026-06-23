@@ -18,6 +18,11 @@ class Question extends Model
         return $this->belongsTo(ExamSection::class, 'exam_section_id');
     }
 
+    public function package()
+    {
+        return $this->belongsTo(QuestionPackage::class, 'question_package_id');
+    }
+
     public function options()
     {
         return $this->hasMany(QuestionOption::class)->orderBy('order_number');

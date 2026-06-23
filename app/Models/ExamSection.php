@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class ExamSection extends Model
 {
-    protected $fillable = ['question_package_id', 'name', 'description', 'order_number', 'duration_minutes', 'question_count'];
+    protected $fillable = ['question_package_id', 'name', 'code', 'description', 'order_number', 'duration_minutes', 'question_count'];
 
     public function package()
     {

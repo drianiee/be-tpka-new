@@ -35,7 +35,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('question_package_id')->constrained()->cascadeOnDelete();
             $table->foreignId('exam_section_id')->constrained()->cascadeOnDelete();
-            $table->string('type')->default('single_choice');
+            $table->string('type')->default('multiple_choice');
             $table->text('question_text');
             $table->string('question_image')->nullable();
             $table->text('explanation')->nullable();

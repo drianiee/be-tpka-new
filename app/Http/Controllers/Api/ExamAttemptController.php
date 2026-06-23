@@ -27,7 +27,7 @@ class ExamAttemptController extends Controller
             $attempt = $this->service->submit($attempt, true);
         }
 
-return new ExamAttemptResource($attempt);
+        return new ExamAttemptResource($attempt);
     }
 
     public function answer(SaveAnswerRequest $request, ExamAttempt $attempt, int $questionId)
@@ -47,7 +47,7 @@ return new ExamAttemptResource($attempt);
             $this->service->saveAnswer($attempt, $questionId, $answer);
         }
 
-return ['message' => 'Jawaban tersimpan.'];
+        return ['message' => 'Jawaban tersimpan.'];
     }
 
     public function heartbeat(Request $request, ExamAttempt $attempt)
@@ -80,6 +80,17 @@ return ['message' => 'Jawaban tersimpan.'];
 
     private function resultData(ExamAttempt $a): array
     {
-        return ['id' => $a->id, 'status' => $a->status, 'submitted_at' => $a->submitted_at?->toISOString(), 'score_total' => (float) $a->score_total, 'score_breakdown' => $a->score_breakdown, 'scores' => $a->scores];
+        $a->loadMissing(['schedule', 'package', 'scores']);
+
+        return [
+            'id' => $a->id,
+            'status' => $a->status,
+            'submitted_at' => $a->submitted_at?->toISOString(),
+            'score_total' => (float) $a->score_total,
+            'score_breakdown' => $a->score_breakdown,
+            'scores' => $a->scores,
+            'schedule' => ['id' => $a->schedule->id, 'title' => $a->schedule->title],
+            'question_package' => ['id' => $a->package->id, 'name' => $a->package->name],
+        ];
     }
 }

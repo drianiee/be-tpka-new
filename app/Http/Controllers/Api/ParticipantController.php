@@ -7,10 +7,13 @@ use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\Schedule;
 use App\Models\User;
+use App\Services\CertificateDataService;
 use Illuminate\Http\Request;
 
 class ParticipantController extends Controller
 {
+    public function __construct(private CertificateDataService $certificateData) {}
+
     public function index(Request $request)
     {
         return User::where('role', 'peserta')->when($request->filled('q'), fn ($q) => $q->where(fn ($x) => $x->where('name', 'like', '%'.$request->q.'%')->orWhere('email', 'like', '%'.$request->q.'%')))->paginate($request->integer('per_page', 10));
@@ -76,7 +79,8 @@ class ParticipantController extends Controller
     private function scoreData(ExamAttempt $a): array
     {
         $by = $a->scores->keyBy('exam_section_id');
+        $certificate = $a->scores->isNotEmpty() ? $this->certificateData->payload($a) : null;
 
-        return ['id' => $a->id, 'date' => $a->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $a->schedule->start_at->format('H:i:s'), 'end_time' => $a->schedule->end_at->format('H:i:s'), 'status' => $a->status, 'partner' => null, 'score_total' => (float) $a->score_total, 'score_breakdown' => $a->score_breakdown, 'scores' => ['verbal' => $by->values()->get(0)?->final_score, 'kuantitatif' => $by->values()->get(1)?->final_score, 'logika' => $by->values()->get(2)?->final_score, 'spasial' => $by->values()->get(3)?->final_score, 'total' => (float) $a->score_total], 'certificate' => null];
+        return ['id' => $a->id, 'date' => $a->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $a->schedule->start_at->format('H:i:s'), 'end_time' => $a->schedule->end_at->format('H:i:s'), 'status' => $a->status, 'partner' => null, 'score_total' => (float) $a->score_total, 'score_breakdown' => $a->score_breakdown, 'scores' => ['verbal' => $by->values()->get(0)?->final_score, 'kuantitatif' => $by->values()->get(1)?->final_score, 'logika' => $by->values()->get(2)?->final_score, 'spasial' => $by->values()->get(3)?->final_score, 'total' => (float) $a->score_total], 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url']] : null];
     }
 }

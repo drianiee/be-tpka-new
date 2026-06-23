@@ -23,8 +23,8 @@ Route::prefix('auth')->group(function () {
 });
 
 Route::get('schedules/upcoming', [ScheduleController::class, 'upcoming']);
-Route::get('certificates/data/{uuid}', fn (string $uuid) => response()->json(['valid' => false, 'message' => 'Sertifikat belum tersedia pada exam engine baru.', 'data' => null], 404));
-Route::get('certificates/pdf/{uuid}', fn () => response()->json(['message' => 'PDF sertifikat belum tersedia.'], 404));
+Route::get('certificates/data/{uuid}', [CertificateController::class, 'data']);
+Route::get('certificates/pdf/{uuid}', [CertificateController::class, 'pdf']);
 Route::post('partner/onboarding/claim', fn () => response()->json(['message' => 'Undangan onboarding tidak valid atau sudah kedaluwarsa.'], 422));
 Route::post('payments/midtrans/callback', fn () => ['message' => 'Callback diterima; verifikasi signature TODO.']);
 
@@ -39,6 +39,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('dashboard/participants-chart', [DashboardController::class, 'participants']);
 
     Route::middleware('role:administrator,operator')->group(function () {
+        Route::get('question-packages/{questionPackage}/sections', [QuestionContentController::class, 'sections']);
+        Route::post('question-packages/{questionPackage}/sections', [QuestionContentController::class, 'storeSection']);
+        Route::put('sections/{section}', [QuestionContentController::class, 'updateSection']);
+        Route::delete('sections/{section}', [QuestionContentController::class, 'deleteSection']);
+        Route::get('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'questions']);
+        Route::post('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'storePackageQuestion']);
+        Route::get('question-packages/{questionPackage}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
+        Route::post('question-packages/{questionPackage}/questions/import', [QuestionContentController::class, 'importQuestions']);
+        Route::get('questions/{question}', [QuestionContentController::class, 'showQuestion']);
+        Route::put('questions/{question}', [QuestionContentController::class, 'updateQuestion']);
+        Route::delete('questions/{question}', [QuestionContentController::class, 'deleteQuestion']);
         Route::apiResource('question-packages', QuestionPackageController::class)->parameters(['question-packages' => 'questionPackage']);
         Route::patch('question-packages/{questionPackage}/status', [QuestionPackageController::class, 'status']);
         Route::apiResource('schedules', ScheduleController::class);
@@ -63,10 +74,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('payments/midtrans/create', fn () => response()->json(['message' => 'MIDTRANS_SERVER_KEY belum dikonfigurasi.'], 503));
 
         Route::prefix('admin')->group(function () {
+            Route::post('question-images', [QuestionContentController::class, 'uploadImage']);
+            Route::apiResource('question-packages', QuestionPackageController::class)->parameters(['question-packages' => 'questionPackage']);
+            Route::patch('question-packages/{questionPackage}/status', [QuestionPackageController::class, 'status']);
             Route::get('question-packages/{questionPackage}/sections', [QuestionContentController::class, 'sections']);
             Route::post('question-packages/{questionPackage}/sections', [QuestionContentController::class, 'storeSection']);
             Route::put('sections/{section}', [QuestionContentController::class, 'updateSection']);
             Route::delete('sections/{section}', [QuestionContentController::class, 'deleteSection']);
+            Route::get('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'questions']);
+            Route::post('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'storePackageQuestion']);
+            Route::get('question-packages/{questionPackage}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
+            Route::post('question-packages/{questionPackage}/questions/import', [QuestionContentController::class, 'importQuestions']);
             Route::get('questions', [QuestionContentController::class, 'questions']);
             Route::post('questions', [QuestionContentController::class, 'storeQuestion']);
             Route::get('questions/{question}', [QuestionContentController::class, 'showQuestion']);
