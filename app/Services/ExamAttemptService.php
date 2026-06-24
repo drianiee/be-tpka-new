@@ -19,7 +19,9 @@ class ExamAttemptService
     public function start(User $user, Schedule $schedule): ExamAttempt
     {
         $registration = ExamRegistration::whereBelongsTo($user)->whereBelongsTo($schedule)->first();
-        throw_unless($registration && $registration->access_status === 'unlocked' && in_array($registration->status, ['paid', 'approved'], true), ValidationException::withMessages(['schedule' => 'Pendaftaran belum memiliki akses ujian.']));
+        abort_unless($registration, 403, 'Pendaftaran belum ditemukan.');
+        abort_if($registration->access_status !== 'unlocked', 403, 'Pembayaran belum selesai.');
+        abort_unless(in_array($registration->status, ['paid', 'approved'], true), 403, 'Pendaftaran belum memiliki akses ujian.');
         throw_unless($schedule->status === 'published' && now()->between($schedule->start_at, $schedule->end_at), ValidationException::withMessages(['schedule' => 'Jadwal ujian belum aktif atau sudah berakhir.']));
 
         $existing = ExamAttempt::where('user_id', $user->id)->where('schedule_id', $schedule->id)->where('status', 'in_progress')->first();
@@ -30,7 +32,7 @@ class ExamAttemptService
         return DB::transaction(function () use ($user, $schedule) {
             $package = $schedule->package()->with([
                 'sections' => fn ($q) => $q->orderBy('order_number'),
-                'questions' => fn ($q) => $q->where('is_active', true)->with('options'),
+                'questions' => fn ($q) => $q->with('options'),
             ])->firstOrFail();
             throw_if($package->questions->isEmpty(), ValidationException::withMessages(['package' => 'Paket belum memiliki soal aktif.']));
             $attempt = ExamAttempt::create(['user_id' => $user->id, 'schedule_id' => $schedule->id, 'question_package_id' => $package->id, 'status' => 'in_progress', 'started_at' => now(), 'expires_at' => now()->addMinutes($package->total_duration_minutes)]);

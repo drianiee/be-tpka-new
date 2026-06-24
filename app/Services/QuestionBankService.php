@@ -33,8 +33,6 @@ class QuestionBankService
         'option_d_image',
         'correct_option',
         'score',
-        'difficulty',
-        'explanation',
     ];
 
     public function createDefaultSections(QuestionPackage $package, array $sectionSettings = []): void
@@ -98,6 +96,8 @@ class QuestionBankService
             throw ValidationException::withMessages(['exam_section_id' => 'Section tidak termasuk paket soal ini.']);
         }
 
+        $data['question_image'] = $this->normalizeImageReference($data['question_image'] ?? null, 'question_image');
+
         if (blank($data['question_text'] ?? null) && blank($data['question_image'] ?? null)) {
             throw ValidationException::withMessages(['question_text' => 'Soal wajib memiliki teks atau gambar.']);
         }
@@ -106,7 +106,7 @@ class QuestionBankService
             return [
                 'option_label' => strtoupper((string) ($option['option_label'] ?? '')),
                 'option_text' => filled($option['option_text'] ?? null) ? $option['option_text'] : null,
-                'option_image' => filled($option['option_image'] ?? null) ? $option['option_image'] : null,
+                'option_image' => $this->normalizeImageReference($option['option_image'] ?? null, 'options'),
                 'is_correct' => (bool) ($option['is_correct'] ?? false),
                 'order_number' => (int) ($option['order_number'] ?? 0),
             ];
@@ -130,9 +130,7 @@ class QuestionBankService
         $data['question_package_id'] = $package->id;
         $data['type'] = $data['type'] ?? 'multiple_choice';
         $data['question_text'] = filled($data['question_text'] ?? null) ? $data['question_text'] : null;
-        $data['question_image'] = filled($data['question_image'] ?? null) ? $data['question_image'] : null;
         $data['score'] = $data['score'] ?? 1;
-        $data['is_active'] = $data['is_active'] ?? true;
         $data['order_number'] = $data['order_number'] ?? ((int) $section->questions()->max('order_number') + 1);
         $data['options'] = $options->all();
 
@@ -215,9 +213,6 @@ class QuestionBankService
                     'question_text' => $row['question_text'] ?: null,
                     'question_image' => $row['question_image'] ?: null,
                     'score' => filled($row['score'] ?? null) ? (float) $row['score'] : 1,
-                    'difficulty' => $row['difficulty'] ?: null,
-                    'explanation' => $row['explanation'] ?: null,
-                    'is_active' => true,
                     'options' => collect(['A', 'B', 'C', 'D'])->map(fn (string $label, int $i) => [
                         'option_label' => $label,
                         'option_text' => $row['option_'.strtolower($label).'_text'] ?: null,
@@ -236,10 +231,10 @@ class QuestionBankService
     {
         $package->load('sections');
         foreach ($package->sections as $section) {
-            $section->update(['question_count' => $section->questions()->where('is_active', true)->count()]);
+            $section->update(['question_count' => $section->questions()->count()]);
         }
 
-        $package->update(['total_questions' => $package->questions()->where('is_active', true)->count()]);
+        $package->update(['total_questions' => $package->questions()->count()]);
     }
 
     private function readCsv(UploadedFile $file): array
@@ -278,5 +273,25 @@ class QuestionBankService
         fclose($handle);
 
         return [$rows, []];
+    }
+
+    private function normalizeImageReference(mixed $value, string $field): ?string
+    {
+        if (blank($value)) {
+            return null;
+        }
+
+        $value = (string) $value;
+        $path = parse_url($value, PHP_URL_PATH) ?: $value;
+        $path = ltrim($path, '/');
+        if (str_starts_with($path, 'storage/')) {
+            $path = substr($path, strlen('storage/'));
+        }
+
+        if (! str_starts_with($path, 'question-images/')) {
+            throw ValidationException::withMessages([$field => 'Gambar soal/opsi hanya boleh berasal dari upload gambar.']);
+        }
+
+        return $value;
     }
 }

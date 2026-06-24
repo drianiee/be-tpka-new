@@ -6,12 +6,12 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\ExamAttemptController;
 use App\Http\Controllers\Api\OperatorController;
 use App\Http\Controllers\Api\ParticipantController;
+use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\QuestionContentController;
 use App\Http\Controllers\Api\QuestionPackageController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Models\ExamAttempt;
 use App\Models\Partner;
-use App\Models\Payment;
 use App\Models\Schedule;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -26,7 +26,7 @@ Route::get('schedules/upcoming', [ScheduleController::class, 'upcoming']);
 Route::get('certificates/data/{uuid}', [CertificateController::class, 'data']);
 Route::get('certificates/pdf/{uuid}', [CertificateController::class, 'pdf']);
 Route::post('partner/onboarding/claim', fn () => response()->json(['message' => 'Undangan onboarding tidak valid atau sudah kedaluwarsa.'], 422));
-Route::post('payments/midtrans/callback', fn () => ['message' => 'Callback diterima; verifikasi signature TODO.']);
+Route::post('payments/midtrans/callback', [PaymentController::class, 'callback']);
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('me', [AuthController::class, 'me']);
@@ -69,9 +69,8 @@ Route::middleware('auth:sanctum')->group(function () {
         });
         Route::get('partners/{partner}', fn (Partner $partner) => ['partner' => $partner, 'schedules' => ['current_page' => 1, 'data' => [], 'last_page' => 1, 'per_page' => 20, 'total' => 0]]);
 
-        Route::get('payments', fn (Request $r) => ['summary' => ['income_paid_total' => 0, 'count_paid' => 0, 'count_pending' => Payment::where('transaction_status', 'pending')->count(), 'count_failed' => 0], 'payments' => Payment::with(['user', 'schedule'])->paginate($r->integer('per_page', 10))]);
-        Route::get('payments/{payment}', fn (Payment $payment) => ['payment' => $payment]);
-        Route::post('payments/midtrans/create', fn () => response()->json(['message' => 'MIDTRANS_SERVER_KEY belum dikonfigurasi.'], 503));
+        Route::get('payments', [PaymentController::class, 'index']);
+        Route::get('payments/{payment}', [PaymentController::class, 'show']);
 
         Route::prefix('admin')->group(function () {
             Route::post('question-images', [QuestionContentController::class, 'uploadImage']);
@@ -113,7 +112,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:peserta')->prefix('participant')->group(function () {
         Route::get('schedules', [ParticipantController::class, 'schedules']);
         Route::post('schedules/{schedule}/register', [ParticipantController::class, 'register']);
-        Route::post('schedules/{schedule}/pay', fn () => response()->json(['message' => 'Midtrans belum dikonfigurasi.'], 503));
+        Route::post('schedules/{schedule}/pay', [ParticipantController::class, 'register']);
         Route::get('my-schedules', [ParticipantController::class, 'mySchedules']);
         Route::get('my-schedules/{schedule}', [ParticipantController::class, 'mySchedule']);
         Route::post('schedules/{schedule}/attempts', [ExamAttemptController::class, 'start']);

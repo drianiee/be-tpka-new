@@ -58,9 +58,6 @@ class QuestionBankTest extends TestCase
                 'question_text' => $case['question_text'],
                 'question_image' => $case['question_image'],
                 'score' => 1,
-                'difficulty' => null,
-                'explanation' => null,
-                'is_active' => true,
                 'options' => $this->answerOptions(),
             ], $headers)->assertCreated()
                 ->assertJsonPath('data.options.0.option_label', 'A');
@@ -79,8 +76,8 @@ class QuestionBankTest extends TestCase
         $package = $this->createPackage($headers);
 
         $valid = UploadedFile::fake()->createWithContent('questions.csv', implode("\n", [
-            'section_code,order_number,question_text,question_image,option_a_text,option_a_image,option_b_text,option_b_image,option_c_text,option_c_image,option_d_text,option_d_image,correct_option,score,difficulty,explanation',
-            'verbal,1,"Sinonim cepat adalah?",,Lekas,,Lambat,,Diam,,Turun,,A,1,mudah,"Cepat berarti lekas"',
+            'section_code,order_number,question_text,question_image,option_a_text,option_a_image,option_b_text,option_b_image,option_c_text,option_c_image,option_d_text,option_d_image,correct_option,score',
+            'verbal,1,"Sinonim cepat adalah?",,Lekas,,Lambat,,Diam,,Turun,,A,1',
         ])."\n");
 
         $this->post("/api/question-packages/{$package->id}/questions/import", ['file' => $valid], [...$headers, 'Accept' => 'application/json'])
@@ -90,8 +87,8 @@ class QuestionBankTest extends TestCase
         $this->assertDatabaseHas('question_options', ['option_label' => 'A', 'is_correct' => true]);
 
         $invalid = UploadedFile::fake()->createWithContent('questions.csv', implode("\n", [
-            'section_code,order_number,question_text,question_image,option_a_text,option_a_image,option_b_text,option_b_image,option_c_text,option_c_image,option_d_text,option_d_image,correct_option,score,difficulty,explanation',
-            'unknown,2,"Soal invalid",,A,,B,,C,,D,,E,1,,',
+            'section_code,order_number,question_text,question_image,option_a_text,option_a_image,option_b_text,option_b_image,option_c_text,option_c_image,option_d_text,option_d_image,correct_option,score',
+            'unknown,2,"Soal invalid",,A,,B,,C,,D,,E,1',
         ])."\n");
 
         $this->post("/api/question-packages/{$package->id}/questions/import", ['file' => $invalid], [...$headers, 'Accept' => 'application/json'])
@@ -101,7 +98,7 @@ class QuestionBankTest extends TestCase
         $this->assertDatabaseCount('questions', 1);
     }
 
-    public function test_image_upload_returns_storage_path(): void
+    public function test_image_upload_returns_public_url_only(): void
     {
         Storage::fake('public');
         $this->seed(DatabaseSeeder::class);
@@ -110,8 +107,24 @@ class QuestionBankTest extends TestCase
         $this->post('/api/admin/question-images', [
             'image' => UploadedFile::fake()->image('question.png'),
         ], [...$headers, 'Accept' => 'application/json'])->assertCreated()
-            ->assertJsonStructure(['url', 'path'])
-            ->assertJsonPath('path', fn (string $path) => str_starts_with($path, 'question-images/'));
+            ->assertJsonStructure(['url'])
+            ->assertJsonMissing(['path'])
+            ->assertJsonPath('url', fn (string $url) => str_contains($url, '/storage/question-images/'));
+    }
+
+    public function test_question_image_must_come_from_question_image_upload_storage(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $headers = $this->headersFor('admin@tpka.com');
+        $package = $this->createPackage($headers);
+        $sectionId = $package->sections()->where('code', 'verbal')->value('id');
+
+        $this->postJson("/api/question-packages/{$package->id}/questions", [
+            'exam_section_id' => $sectionId,
+            'question_text' => null,
+            'question_image' => '/tmp/manual-path.png',
+            'options' => $this->answerOptions(),
+        ], $headers)->assertUnprocessable();
     }
 
     public function test_participant_attempt_never_contains_answer_key(): void
@@ -127,7 +140,6 @@ class QuestionBankTest extends TestCase
             'order_number' => 1,
             'question_text' => 'Soal safety',
             'score' => 1,
-            'is_active' => true,
             'options' => $this->answerOptions(),
         ], $adminHeaders)->assertCreated();
 

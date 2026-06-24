@@ -52,7 +52,7 @@ class ScheduleController extends Controller
     public function addParticipant(Request $request, Schedule $schedule)
     {
         $data = $request->validate(['user_id' => ['required', 'exists:users,id']]);
-        ExamRegistration::updateOrCreate(['user_id' => $data['user_id'], 'schedule_id' => $schedule->id], ['status' => 'approved', 'access_status' => 'unlocked', 'registered_at' => now()]);
+        ExamRegistration::updateOrCreate(['user_id' => $data['user_id'], 'schedule_id' => $schedule->id], ['payment_id' => null, 'status' => 'approved', 'access_status' => 'unlocked', 'registration_source' => $schedule->partner_id || $schedule->is_partner ? 'partner' : 'admin', 'registered_at' => now()]);
 
         return ['message' => 'Peserta ditambahkan.', 'schedule' => $this->legacy($schedule->fresh(['package', 'registrations']))];
     }
@@ -68,7 +68,7 @@ class ScheduleController extends Controller
     {
         $start = $s->start_at;
 
-        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $s->package ? [['id' => $s->package->id, 'name' => $s->package->name, 'status' => $s->package->status, 'total_questions' => $s->package->total_questions, 'total_duration_minutes' => $s->package->total_duration_minutes]] : [], 'attempt_count' => $s->attempts->count(), 'submitted_count' => $s->attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(fn ($r) => ['id' => $r->user_id, 'name' => $r->user?->name, 'email' => $r->user?->email, 'status' => $r->status, 'scores' => $r->user ? $s->attempts->firstWhere('user_id', $r->user_id)?->score_breakdown : null])->values() : [], 'current_page' => 1, 'last_page' => 1, 'per_page' => 100, 'total' => $s->registrations->count()]];
+        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => (bool) ($s->is_partner || $s->partner_id), 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $s->package ? [['id' => $s->package->id, 'name' => $s->package->name, 'status' => $s->package->status, 'total_questions' => $s->package->total_questions, 'total_duration_minutes' => $s->package->total_duration_minutes]] : [], 'attempt_count' => $s->attempts->count(), 'submitted_count' => $s->attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(fn ($r) => ['id' => $r->user_id, 'name' => $r->user?->name, 'email' => $r->user?->email, 'status' => $r->status, 'scores' => $r->user ? $s->attempts->firstWhere('user_id', $r->user_id)?->score_breakdown : null])->values() : [], 'current_page' => 1, 'last_page' => 1, 'per_page' => 100, 'total' => $s->registrations->count()]];
     }
 
     private function scheduleData(array $data): array
@@ -77,6 +77,7 @@ class ScheduleController extends Controller
             $package = QuestionPackage::findOrFail($data['question_package_id']);
             $data['end_at'] = Carbon::parse($data['start_at'])->addMinutes((int) $package->total_duration_minutes);
         }
+        $data['is_partner'] = (bool) ($data['is_partner'] ?? false) || ! empty($data['partner_id']);
 
         return $data;
     }

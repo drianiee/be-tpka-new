@@ -84,7 +84,7 @@ class ExamFlowTest extends TestCase
         $schedule = $this->createExamFixture($participant);
         $schedule->registrations()->where('user_id', $participant->id)->delete();
         $this->actingAs($participant, 'sanctum')->postJson("/api/participant/schedules/{$schedule->id}/attempts")
-            ->assertUnprocessable()->assertJsonValidationErrors('schedule');
+            ->assertForbidden()->assertJsonPath('message', 'Pendaftaran belum ditemukan.');
     }
 
     private function createExamFixture(User $participant): Schedule
@@ -119,7 +119,6 @@ class ExamFlowTest extends TestCase
                 'type' => 'single_choice',
                 'question_text' => $item['text'],
                 'score' => 1,
-                'is_active' => true,
                 'order_number' => $i + 1,
             ]);
             foreach ($item['options'] as $j => $option) {

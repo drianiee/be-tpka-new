@@ -24,6 +24,16 @@ DB_PORT=3306
 DB_DATABASE=tpka
 DB_USERNAME=andrian
 DB_PASSWORD=Nazwa2011
+
+MIDTRANS_MERCHANT_ID=
+MIDTRANS_CLIENT_KEY=
+MIDTRANS_SERVER_KEY=
+MIDTRANS_IS_PRODUCTION=false
+MIDTRANS_IS_SANITIZED=true
+MIDTRANS_IS_3DS=true
+
+FRONTEND_URL=http://localhost:3000
+BACKEND_URL=http://127.0.0.1:8000
 ```
 
 Pastikan database `tpka` sudah ada di MySQL/MariaDB. Untuk menjalankan MariaDB via Homebrew:
@@ -110,8 +120,50 @@ Payment dan sertifikat:
 
 - `GET /api/payments`
 - `GET /api/payments/{id}`
+- `POST /api/payments/midtrans/callback`
 - `GET /api/certificates/data/{uuid}`
 - `GET /api/certificates/pdf/{uuid}`
+
+## Midtrans Sandbox
+
+Key Midtrans wajib disimpan di `.env`, bukan di source code. `.env.example` hanya memakai placeholder kosong.
+
+Flow pembayaran:
+
+- Peserta umum daftar sendiri ke jadwal berbayar lewat `POST /api/participant/schedules/{scheduleId}/register`.
+- Backend membuat `exam_registration` status `pending_payment`, `payment` status `pending`, lalu membuat transaksi Snap.
+- Frontend memakai `midtrans.redirect_url` atau `payment.snap_redirect_url` untuk lanjut pembayaran.
+- Midtrans mengirim callback ke `POST /api/payments/midtrans/callback`.
+- Callback memvalidasi signature `sha512(order_id + status_code + gross_amount + MIDTRANS_SERVER_KEY)`.
+- Status `settlement` atau `capture` membuka akses ujian dengan `access_status = unlocked`.
+- Jadwal gratis langsung `approved/unlocked` tanpa payment.
+- Jadwal mitra/admin-import langsung `approved/unlocked` tanpa Midtrans.
+
+Untuk development lokal, jalankan backend:
+
+```bash
+php artisan serve
+```
+
+Lalu expose backend dengan ngrok:
+
+```bash
+ngrok http 8000
+```
+
+Set Payment Notification URL di Midtrans Dashboard ke URL ngrok backend:
+
+```text
+https://URL-NGROK/api/payments/midtrans/callback
+```
+
+Set redirect URL Midtrans ke frontend:
+
+```text
+Finish:   http://localhost:3000/payment/finish
+Unfinish: http://localhost:3000/payment/finish
+Error:    http://localhost:3000/payment/finish
+```
 
 ## Flow Testing Manual
 
@@ -166,6 +218,19 @@ curl -s -X POST http://127.0.0.1:8000/api/participant/attempts/1/submit \
 curl -s http://127.0.0.1:8000/api/participant/attempts/1/result \
   -H "Authorization: Bearer TOKEN"
 ```
+
+### Testing Payment Manual
+
+1. Login peserta di frontend.
+2. Buka menu jadwal peserta.
+3. Pilih jadwal umum berbayar, lalu klik daftar.
+4. Pastikan frontend diarahkan ke Snap Sandbox.
+5. Selesaikan pembayaran dengan data kartu sandbox Midtrans.
+6. Pastikan callback masuk ke backend lewat ngrok.
+7. Cek `GET /api/participant/my-schedules`; status payment harus berubah dan `registration.access_status` menjadi `unlocked`.
+8. Klik mulai tes; backend hanya membuat attempt jika registration sudah unlocked.
+9. Untuk jadwal gratis, daftar harus langsung unlocked tanpa record payment.
+10. Untuk jadwal mitra/admin-import, tambahkan peserta lewat admin/operator; tidak boleh membuat transaksi Midtrans.
 
 ## Catatan Implementasi
 

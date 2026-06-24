@@ -14,6 +14,7 @@ return new class extends Migration
             $table->enum('status', ['draft', 'published', 'archived'])->default('draft');
             $table->unsignedInteger('total_duration_minutes')->default(0);
             $table->unsignedInteger('total_questions')->default(0);
+            $table->unsignedInteger('target_total_questions')->default(0);
             $table->foreignId('created_by')->constrained('users');
             $table->timestamps();
         });
@@ -22,12 +23,15 @@ return new class extends Migration
             $table->id();
             $table->foreignId('question_package_id')->constrained()->cascadeOnDelete();
             $table->string('name');
+            $table->string('code')->nullable();
             $table->text('description')->nullable();
             $table->unsignedInteger('order_number');
             $table->unsignedInteger('duration_minutes')->default(0);
             $table->unsignedInteger('question_count')->default(0);
+            $table->unsignedInteger('target_question_count')->default(0);
             $table->timestamps();
             $table->unique(['question_package_id', 'order_number']);
+            $table->unique(['question_package_id', 'code']);
         });
 
         Schema::create('questions', function (Blueprint $table) {
@@ -35,12 +39,9 @@ return new class extends Migration
             $table->foreignId('question_package_id')->constrained()->cascadeOnDelete();
             $table->foreignId('exam_section_id')->constrained()->cascadeOnDelete();
             $table->string('type')->default('multiple_choice');
-            $table->text('question_text');
+            $table->text('question_text')->nullable();
             $table->string('question_image')->nullable();
-            $table->text('explanation')->nullable();
-            $table->string('difficulty')->nullable();
             $table->decimal('score', 8, 2)->default(1);
-            $table->boolean('is_active')->default(true);
             $table->unsignedInteger('order_number');
             $table->timestamps();
         });
@@ -49,7 +50,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('question_id')->constrained()->cascadeOnDelete();
             $table->string('option_label', 10);
-            $table->text('option_text');
+            $table->text('option_text')->nullable();
             $table->string('option_image')->nullable();
             $table->boolean('is_correct')->default(false);
             $table->unsignedInteger('order_number');
@@ -80,6 +81,7 @@ return new class extends Migration
             $table->decimal('price', 12, 2)->default(0);
             $table->unsignedInteger('quota')->default(100);
             $table->enum('status', ['draft', 'published', 'closed', 'cancelled'])->default('draft');
+            $table->boolean('is_partner')->default(false);
             $table->foreignId('created_by')->constrained('users');
             $table->timestamps();
         });
@@ -88,10 +90,22 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained();
             $table->foreignId('schedule_id')->constrained();
+            $table->unsignedBigInteger('exam_registration_id')->nullable()->index();
             $table->string('order_id')->nullable()->unique();
+            $table->string('transaction_id')->nullable();
+            $table->string('snap_token')->nullable();
+            $table->text('snap_redirect_url')->nullable();
             $table->decimal('amount', 12, 2);
             $table->string('transaction_status')->default('pending');
             $table->string('payment_type')->nullable();
+            $table->string('fraud_status')->nullable();
+            $table->string('status_code')->nullable();
+            $table->text('status_message')->nullable();
+            $table->string('bank')->nullable();
+            $table->string('va_number')->nullable();
+            $table->json('va_numbers')->nullable();
+            $table->timestamp('transaction_time')->nullable();
+            $table->timestamp('settlement_time')->nullable();
             $table->json('payload')->nullable();
             $table->timestamp('paid_at')->nullable();
             $table->timestamps();
@@ -104,6 +118,7 @@ return new class extends Migration
             $table->foreignId('payment_id')->nullable()->constrained()->nullOnDelete();
             $table->enum('status', ['pending_payment', 'paid', 'approved', 'cancelled', 'expired']);
             $table->enum('access_status', ['locked', 'unlocked'])->default('locked');
+            $table->enum('registration_source', ['self', 'admin', 'partner', 'import'])->default('self');
             $table->timestamp('registered_at');
             $table->timestamps();
             $table->unique(['user_id', 'schedule_id']);
@@ -130,7 +145,7 @@ return new class extends Migration
             $table->foreignId('question_id')->constrained();
             $table->foreignId('exam_section_id')->constrained();
             $table->unsignedInteger('order_number');
-            $table->text('snapshot_question_text');
+            $table->text('snapshot_question_text')->nullable();
             $table->string('snapshot_question_image')->nullable();
             $table->json('snapshot_options');
             $table->timestamps();

@@ -6,11 +6,11 @@ use Illuminate\Database\Eloquent\Model;
 
 class Schedule extends Model
 {
-    protected $fillable = ['question_package_id', 'partner_id', 'title', 'description', 'start_at', 'end_at', 'registration_start_at', 'registration_end_at', 'price', 'quota', 'status', 'created_by'];
+    protected $fillable = ['question_package_id', 'partner_id', 'title', 'description', 'start_at', 'end_at', 'registration_start_at', 'registration_end_at', 'price', 'quota', 'status', 'is_partner', 'created_by'];
 
     protected function casts(): array
     {
-        return ['start_at' => 'datetime', 'end_at' => 'datetime', 'registration_start_at' => 'datetime', 'registration_end_at' => 'datetime', 'price' => 'decimal:2'];
+        return ['start_at' => 'datetime', 'end_at' => 'datetime', 'registration_start_at' => 'datetime', 'registration_end_at' => 'datetime', 'price' => 'decimal:2', 'is_partner' => 'boolean'];
     }
 
     public function package()
@@ -26,5 +26,10 @@ class Schedule extends Model
     public function attempts()
     {
         return $this->hasMany(ExamAttempt::class);
+    }
+
+    public function partner()
+    {
+        return $this->belongsTo(Partner::class);
     }
 }

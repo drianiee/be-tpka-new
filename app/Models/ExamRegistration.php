@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class ExamRegistration extends Model
 {
-    protected $fillable = ['user_id', 'schedule_id', 'payment_id', 'status', 'access_status', 'registered_at'];
+    protected $fillable = ['user_id', 'schedule_id', 'payment_id', 'status', 'access_status', 'registration_source', 'registered_at'];
 
     protected function casts(): array
     {
@@ -21,5 +21,15 @@ class ExamRegistration extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function payment()
+    {
+        return $this->belongsTo(Payment::class);
+    }
+
+    public function payments()
+    {
+        return $this->hasMany(Payment::class);
     }
 }

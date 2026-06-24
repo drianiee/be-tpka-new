@@ -6,11 +6,11 @@ use Illuminate\Database\Eloquent\Model;
 
 class Question extends Model
 {
-    protected $fillable = ['question_package_id', 'exam_section_id', 'type', 'question_text', 'question_image', 'explanation', 'difficulty', 'score', 'is_active', 'order_number'];
+    protected $fillable = ['question_package_id', 'exam_section_id', 'type', 'question_text', 'question_image', 'score', 'order_number'];
 
     protected function casts(): array
     {
-        return ['score' => 'decimal:2', 'is_active' => 'boolean'];
+        return ['score' => 'decimal:2'];
     }
 
     public function section()

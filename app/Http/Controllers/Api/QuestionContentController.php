@@ -73,8 +73,6 @@ class QuestionContentController extends Controller
             ->when($request->filled('section_id'), fn ($q) => $q->where('exam_section_id', $request->integer('section_id')))
             ->when($request->filled('section_code'), fn ($q) => $q->whereHas('section', fn ($s) => $s->where('code', strtolower((string) $request->section_code))))
             ->when($request->filled('search'), fn ($q) => $q->where('question_text', 'like', '%'.$request->search.'%'))
-            ->when($request->filled('difficulty'), fn ($q) => $q->where('difficulty', $request->difficulty))
-            ->when($request->has('is_active'), fn ($q) => $q->where('is_active', $request->boolean('is_active')))
             ->orderBy('exam_section_id')
             ->orderBy('order_number');
 
@@ -129,7 +127,7 @@ class QuestionContentController extends Controller
     {
         $rows = [
             QuestionBankService::IMPORT_COLUMNS,
-            ['verbal', '1', 'Contoh soal verbal', '', 'Pilihan A', '', 'Pilihan B', '', 'Pilihan C', '', 'Pilihan D', '', 'A', '1', 'mudah', 'Pembahasan opsional'],
+            ['verbal', '1', 'Contoh soal verbal', '', 'Pilihan A', '', 'Pilihan B', '', 'Pilihan C', '', 'Pilihan D', '', 'A', '1'],
         ];
         $csv = collect($rows)->map(fn ($row) => collect($row)->map(fn ($value) => '"'.str_replace('"', '""', (string) $value).'"')->implode(','))->implode("\n")."\n";
 
@@ -155,7 +153,6 @@ class QuestionContentController extends Controller
 
         return response()->json([
             'url' => $request->getSchemeAndHttpHost().'/storage/'.$path,
-            'path' => $path,
         ], 201);
     }
 
@@ -166,18 +163,34 @@ class QuestionContentController extends Controller
             'exam_section_id' => ['required', 'integer', 'exists:exam_sections,id'],
             'type' => ['sometimes', 'in:multiple_choice,single_choice'],
             'question_text' => ['nullable', 'string'],
-            'question_image' => ['nullable', 'string'],
-            'explanation' => ['nullable', 'string'],
-            'difficulty' => ['nullable', 'string', 'max:100'],
+            'question_image' => ['nullable', 'string', $this->uploadedQuestionImageRule()],
             'score' => ['nullable', 'numeric', 'min:1'],
-            'is_active' => ['nullable', 'boolean'],
             'order_number' => ['nullable', 'integer', 'min:1'],
             'options' => ['required', 'array', 'size:4'],
             'options.*.option_label' => ['required', 'string', 'in:A,B,C,D'],
             'options.*.option_text' => ['nullable', 'string'],
-            'options.*.option_image' => ['nullable', 'string'],
+            'options.*.option_image' => ['nullable', 'string', $this->uploadedQuestionImageRule()],
             'options.*.is_correct' => ['required', 'boolean'],
             'options.*.order_number' => ['nullable', 'integer', 'min:1'],
         ]);
+    }
+
+    private function uploadedQuestionImageRule(): \Closure
+    {
+        return function (string $attribute, mixed $value, \Closure $fail): void {
+            if (blank($value)) {
+                return;
+            }
+
+            $path = parse_url((string) $value, PHP_URL_PATH) ?: (string) $value;
+            $path = ltrim($path, '/');
+            if (str_starts_with($path, 'storage/')) {
+                $path = substr($path, strlen('storage/'));
+            }
+
+            if (! str_starts_with($path, 'question-images/')) {
+                $fail('Gambar soal/opsi hanya boleh berasal dari upload gambar.');
+            }
+        };
     }
 }
