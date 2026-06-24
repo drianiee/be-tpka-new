@@ -34,12 +34,38 @@ MIDTRANS_IS_3DS=true
 
 FRONTEND_URL=http://localhost:3000
 BACKEND_URL=http://127.0.0.1:8000
+
+MAIL_MAILER=smtp
+MAIL_HOST=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USERNAME=
+MAIL_PASSWORD=
+MAIL_ENCRYPTION=tls
+MAIL_FROM_ADDRESS=
+MAIL_FROM_NAME="TPKA ITS"
 ```
 
 Pastikan database `tpka` sudah ada di MySQL/MariaDB. Untuk menjalankan MariaDB via Homebrew:
 
 ```bash
 brew services start mariadb
+```
+
+### Gmail SMTP
+
+Pengiriman email memakai Gmail SMTP. Isi nilai `MAIL_USERNAME`, `MAIL_PASSWORD`, dan `MAIL_FROM_ADDRESS` di `.env` lokal. `MAIL_PASSWORD` harus memakai Gmail App Password, bukan password Gmail biasa.
+
+Setelah mengubah konfigurasi mail:
+
+```bash
+php artisan config:clear
+php artisan cache:clear
+```
+
+Jika nanti queue dipakai untuk email:
+
+```bash
+php artisan queue:restart
 ```
 
 ## Migration dan Seeder
@@ -82,6 +108,8 @@ Auth:
 
 - `POST /api/auth/login`
 - `POST /api/auth/register`
+- `GET|POST /api/auth/email/verify`
+- `POST /api/auth/email/resend`
 - `GET /api/me`
 - `POST /api/logout`
 
@@ -105,6 +133,12 @@ Peserta:
 - `GET /api/participant/my-schedules`
 - `GET /api/participant/my-schedules/{scheduleId}`
 - `GET /api/participant/scores`
+
+Partner onboarding:
+
+- `GET /api/partner/onboarding/preview?token=...`
+- `POST /api/partner/onboarding/claim`
+- `POST /api/schedules/{scheduleId}/partner/import`
 
 Exam engine internal:
 
@@ -238,6 +272,9 @@ curl -s http://127.0.0.1:8000/api/participant/attempts/1/result \
 - Tidak ada Moodle API client, Moodle user ID, Moodle course ID, Moodle quiz ID, Moodle group, `quiz_url`, atau provisioning Moodle.
 - Scoring dihitung dari `questions` dan `question_options` internal, lalu disimpan ke `exam_scores`.
 - Data certificate berasal dari attempt submitted/expired dan `exam_scores`.
+- Email verification peserta mandiri memakai token hash, single-use, berlaku 2 jam.
+- Invitation peserta mitra memakai token hash, single-use untuk onboarding, berlaku 2 hari.
+- Jadwal mitra tidak tampil di public upcoming dan daftar jadwal umum peserta, serta tidak melalui Midtrans.
 
 ## Paket Soal dan Bank Soal
 

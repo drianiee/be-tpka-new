@@ -16,12 +16,13 @@ return new class extends Migration
             $table->string('name');
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
-            $table->string('password');
+            $table->string('password')->nullable();
             $table->enum('role', ['administrator', 'operator', 'peserta'])->default('peserta');
             $table->boolean('is_active')->default(true);
             $table->string('phone')->nullable();
             $table->date('birth_date')->nullable();
             $table->string('id_type')->nullable();
+            $table->string('identity_number')->nullable();
             $table->string('id_image_path')->nullable();
             $table->timestamp('profile_completed_at')->nullable();
             $table->rememberToken();
@@ -45,6 +46,16 @@ return new class extends Migration
             $table->timestamp('created_at')->nullable();
         });
 
+        Schema::create('email_verification_tokens', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->string('email')->index();
+            $table->string('token_hash', 64)->unique();
+            $table->timestamp('expires_at');
+            $table->timestamp('used_at')->nullable();
+            $table->timestamps();
+        });
+
         Schema::create('sessions', function (Blueprint $table) {
             $table->string('id')->primary();
             $table->foreignId('user_id')->nullable()->index();
@@ -60,9 +71,10 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('users');
-        Schema::dropIfExists('personal_access_tokens');
-        Schema::dropIfExists('password_reset_tokens');
         Schema::dropIfExists('sessions');
+        Schema::dropIfExists('password_reset_tokens');
+        Schema::dropIfExists('personal_access_tokens');
+        Schema::dropIfExists('email_verification_tokens');
+        Schema::dropIfExists('users');
     }
 };

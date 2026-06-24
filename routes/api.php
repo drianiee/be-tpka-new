@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\ExamAttemptController;
 use App\Http\Controllers\Api\OperatorController;
 use App\Http\Controllers\Api\ParticipantController;
+use App\Http\Controllers\Api\PartnerOnboardingController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\QuestionContentController;
 use App\Http\Controllers\Api\QuestionPackageController;
@@ -20,12 +21,14 @@ Route::prefix('auth')->group(function () {
     Route::post('login', [AuthController::class, 'login']);
     Route::post('register', [AuthController::class, 'register']);
     Route::post('email/resend', [AuthController::class, 'resend']);
+    Route::match(['get', 'post'], 'email/verify', [AuthController::class, 'verifyEmail']);
 });
 
 Route::get('schedules/upcoming', [ScheduleController::class, 'upcoming']);
 Route::get('certificates/data/{uuid}', [CertificateController::class, 'data']);
 Route::get('certificates/pdf/{uuid}', [CertificateController::class, 'pdf']);
-Route::post('partner/onboarding/claim', fn () => response()->json(['message' => 'Undangan onboarding tidak valid atau sudah kedaluwarsa.'], 422));
+Route::get('partner/onboarding/preview', [PartnerOnboardingController::class, 'preview']);
+Route::post('partner/onboarding/claim', [PartnerOnboardingController::class, 'claim']);
 Route::post('payments/midtrans/callback', [PaymentController::class, 'callback']);
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -56,7 +59,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedules/{schedule}/participants', [ScheduleController::class, 'addParticipant']);
         Route::delete('schedules/{schedule}/participants/{userId}', [ScheduleController::class, 'removeParticipant']);
         Route::get('schedules/{schedule}/participants/export', fn () => ['message' => 'Export belum diaktifkan.', 'download_url' => null]);
-        Route::post('schedules/{schedule}/partner/import', fn () => response()->json(['message' => 'Import mitra belum diaktifkan.'], 501));
+        Route::post('schedules/{schedule}/partner/import', [ScheduleController::class, 'importPartnerParticipants']);
 
         Route::get('participants', [ParticipantController::class, 'index']);
         Route::get('participants/{participant}', [ParticipantController::class, 'show']);

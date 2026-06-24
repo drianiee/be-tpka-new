@@ -32,14 +32,14 @@ class ParticipantController extends Controller
 
     public function schedules()
     {
-        return Schedule::where('status', 'published')->where(fn ($q) => $q->whereNull('partner_id')->where('is_partner', false))->where('registration_end_at', '>=', now())->withCount('registrations')->orderBy('start_at')->get()->map(fn ($s) => ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'price' => (string) $s->price, 'capacity' => $s->quota, 'current_participants' => $s->registrations_count, 'registration_status' => 'available', 'status' => $s->status]);
+        return Schedule::where('status', 'published')->where(fn ($q) => $q->whereNull('partner_id')->where('is_partner', false))->where(fn ($q) => $q->whereNull('registration_start_at')->orWhere('registration_start_at', '<=', now()))->where(fn ($q) => $q->whereNull('registration_end_at')->orWhere('registration_end_at', '>=', now()))->withCount('registrations')->orderBy('start_at')->get()->map(fn ($s) => ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'price' => (string) $s->price, 'capacity' => $s->quota, 'current_participants' => $s->registrations_count, 'registration_status' => 'available', 'status' => $s->status]);
     }
 
     public function register(Request $request, Schedule $schedule)
     {
         abort_if($request->user()->role !== 'peserta', 403);
         abort_unless($schedule->status === 'published', 422, 'Jadwal belum dibuka.');
-        abort_if($schedule->partner_id || $schedule->is_partner, 422, 'Jadwal ini khusus peserta mitra.');
+        abort_if($schedule->partner_id || $schedule->is_partner, 403, 'Jadwal ini khusus peserta mitra.');
         if ($schedule->registration_start_at && now()->lt($schedule->registration_start_at)) {
             abort(422, 'Periode pendaftaran belum dimulai.');
         }

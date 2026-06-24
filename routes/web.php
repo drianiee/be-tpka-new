@@ -5,3 +5,11 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', function () {
     return view('welcome');
 });
+
+Route::get('/payment/{status?}', function (?string $status = 'finish') {
+    $targetStatus = in_array($status, ['finish', 'unfinish', 'error'], true) ? $status : 'finish';
+    $frontend = rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/');
+    $query = request()->getQueryString();
+
+    return redirect()->away($frontend.'/payment/finish'.($query ? '?'.$query : ''));
+});

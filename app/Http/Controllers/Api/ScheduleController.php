@@ -7,6 +7,7 @@ use App\Http\Requests\StoreScheduleRequest;
 use App\Models\ExamRegistration;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
+use App\Services\PartnerInvitationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 
@@ -19,12 +20,12 @@ class ScheduleController extends Controller
 
     public function upcoming()
     {
-        return Schedule::where('status', 'published')->where('end_at', '>', now())->orderBy('start_at')->limit(10)->get()->map(fn ($s) => $this->legacy($s));
+        return Schedule::where('status', 'published')->whereNull('partner_id')->where('is_partner', false)->where('end_at', '>', now())->orderBy('start_at')->limit(10)->get()->map(fn ($s) => $this->legacy($s));
     }
 
     public function store(StoreScheduleRequest $request)
     {
-        $schedule = Schedule::create([...$this->scheduleData($request->validated()), 'created_by' => $request->user()->id]);
+        $schedule = Schedule::create([...$this->scheduleData($request->validated(), true), 'created_by' => $request->user()->id]);
 
         return response()->json(['message' => 'Jadwal dibuat.', 'data' => $this->legacy($schedule->load('package'))], 201);
     }
@@ -64,6 +65,14 @@ class ScheduleController extends Controller
         return ['message' => 'Peserta dihapus.'];
     }
 
+    public function importPartnerParticipants(Request $request, Schedule $schedule, PartnerInvitationService $invitations)
+    {
+        $data = $request->validate(['file' => ['required', 'file', 'mimes:csv,txt,xlsx', 'max:10240']]);
+        $summary = $invitations->import($schedule, $data['file'], $request->user());
+
+        return ['message' => 'Import peserta mitra diproses.', 'summary' => $summary];
+    }
+
     private function legacy(Schedule $s): array
     {
         $start = $s->start_at;
@@ -71,11 +80,15 @@ class ScheduleController extends Controller
         return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => (bool) ($s->is_partner || $s->partner_id), 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $s->package ? [['id' => $s->package->id, 'name' => $s->package->name, 'status' => $s->package->status, 'total_questions' => $s->package->total_questions, 'total_duration_minutes' => $s->package->total_duration_minutes]] : [], 'attempt_count' => $s->attempts->count(), 'submitted_count' => $s->attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(fn ($r) => ['id' => $r->user_id, 'name' => $r->user?->name, 'email' => $r->user?->email, 'status' => $r->status, 'scores' => $r->user ? $s->attempts->firstWhere('user_id', $r->user_id)?->score_breakdown : null])->values() : [], 'current_page' => 1, 'last_page' => 1, 'per_page' => 100, 'total' => $s->registrations->count()]];
     }
 
-    private function scheduleData(array $data): array
+    private function scheduleData(array $data, bool $creating = false): array
     {
+        $package = QuestionPackage::findOrFail($data['question_package_id']);
         if (empty($data['end_at'])) {
-            $package = QuestionPackage::findOrFail($data['question_package_id']);
             $data['end_at'] = Carbon::parse($data['start_at'])->addMinutes((int) $package->total_duration_minutes);
+        }
+        if ($creating) {
+            $data['title'] = $package->name.' - '.Carbon::parse($data['start_at'])->format('d/m/Y H:i');
+            $data['status'] = 'published';
         }
         $data['is_partner'] = (bool) ($data['is_partner'] ?? false) || ! empty($data['partner_id']);
 

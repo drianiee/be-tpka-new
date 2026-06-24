@@ -113,7 +113,7 @@ class MidtransPaymentTest extends TestCase
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$schedule->id}/register")
-            ->assertUnprocessable()
+            ->assertForbidden()
             ->assertJsonPath('message', 'Jadwal ini khusus peserta mitra.');
 
         $this->actingAs($admin, 'sanctum')

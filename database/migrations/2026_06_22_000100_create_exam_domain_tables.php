@@ -111,6 +111,22 @@ return new class extends Migration
             $table->timestamps();
         });
 
+        Schema::create('partner_invitations', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('schedule_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('partner_id')->nullable()->constrained()->nullOnDelete();
+            $table->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+            $table->string('name');
+            $table->string('email')->index();
+            $table->string('phone')->nullable();
+            $table->string('identity_number')->nullable();
+            $table->string('token_hash', 64)->unique();
+            $table->timestamp('expires_at');
+            $table->timestamp('claimed_at')->nullable();
+            $table->foreignId('created_by')->constrained('users');
+            $table->timestamps();
+        });
+
         Schema::create('exam_registrations', function (Blueprint $table) {
             $table->id();
             $table->foreignId('user_id')->constrained();
@@ -190,7 +206,7 @@ return new class extends Migration
 
     public function down(): void
     {
-        foreach (['exam_scores', 'attempt_events', 'attempt_answers', 'attempt_questions', 'exam_attempts', 'exam_registrations', 'payments', 'schedules', 'partners', 'question_options', 'questions', 'exam_sections', 'question_packages'] as $table) {
+        foreach (['exam_scores', 'attempt_events', 'attempt_answers', 'attempt_questions', 'exam_attempts', 'exam_registrations', 'partner_invitations', 'payments', 'schedules', 'partners', 'question_options', 'questions', 'exam_sections', 'question_packages'] as $table) {
             Schema::dropIfExists($table);
         }
     }

@@ -12,10 +12,10 @@ use Illuminate\Validation\ValidationException;
 class QuestionBankService
 {
     public const DEFAULT_SECTIONS = [
-        ['code' => 'verbal', 'name' => 'Verbal', 'order_number' => 1, 'duration_minutes' => 50, 'target_question_count' => 50],
-        ['code' => 'kuantitatif', 'name' => 'Kuantitatif', 'order_number' => 2, 'duration_minutes' => 40, 'target_question_count' => 70],
+        ['code' => 'verbal', 'name' => 'Verbal', 'order_number' => 1, 'duration_minutes' => 25, 'target_question_count' => 50],
+        ['code' => 'kuantitatif', 'name' => 'Kuantitatif', 'order_number' => 2, 'duration_minutes' => 60, 'target_question_count' => 70],
         ['code' => 'logika', 'name' => 'Logika', 'order_number' => 3, 'duration_minutes' => 40, 'target_question_count' => 60],
-        ['code' => 'spasial', 'name' => 'Spasial', 'order_number' => 4, 'duration_minutes' => 20, 'target_question_count' => 20],
+        ['code' => 'spasial', 'name' => 'Spasial', 'order_number' => 4, 'duration_minutes' => 25, 'target_question_count' => 20],
     ];
 
     public const IMPORT_COLUMNS = [
