@@ -31,6 +31,8 @@ class QuestionPackageController extends Controller
             $sections = $data['sections'] ?? [];
             unset($data['sections']);
             $data['target_total_questions'] = $data['target_total_questions'] ?? ($sections === [] ? collect(QuestionBankService::DEFAULT_SECTIONS)->sum('target_question_count') : collect($sections)->sum('target_question_count'));
+            $data['base_score'] = $data['base_score'] ?? 200;
+            $data['correct_answer_score'] = $data['correct_answer_score'] ?? 2;
             $data['status'] = 'draft';
             $package = QuestionPackage::create([...$data, 'created_by' => $request->user()->id]);
             $this->questionBank->createDefaultSections($package, $sections);
@@ -51,6 +53,8 @@ class QuestionPackageController extends Controller
         $data = $request->validated();
         $sections = $data['sections'] ?? [];
         unset($data['sections']);
+        $data['base_score'] = $data['base_score'] ?? $questionPackage->base_score;
+        $data['correct_answer_score'] = $data['correct_answer_score'] ?? $questionPackage->correct_answer_score;
         if ($sections !== []) {
             $data['target_total_questions'] = $data['target_total_questions'] ?? collect($sections)->sum('target_question_count');
         }

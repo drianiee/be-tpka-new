@@ -6,7 +6,15 @@ use Illuminate\Database\Eloquent\Model;
 
 class QuestionPackage extends Model
 {
-    protected $fillable = ['name', 'status', 'total_duration_minutes', 'total_questions', 'target_total_questions', 'created_by'];
+    protected $fillable = ['name', 'status', 'total_duration_minutes', 'total_questions', 'target_total_questions', 'base_score', 'correct_answer_score', 'created_by'];
+
+    protected function casts(): array
+    {
+        return [
+            'base_score' => 'integer',
+            'correct_answer_score' => 'integer',
+        ];
+    }
 
     public function sections()
     {

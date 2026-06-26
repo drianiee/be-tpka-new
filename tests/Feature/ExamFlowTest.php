@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
+use App\Models\ExamScore;
 use App\Models\ExamSection;
 use App\Models\Question;
 use App\Models\QuestionOption;
@@ -58,13 +59,19 @@ class ExamFlowTest extends TestCase
             ->assertOk()->assertJsonPath('status', 'submitted');
         $second = $this->postJson("/api/participant/attempts/{$attemptId}/submit", [], $headers)
             ->assertOk()->assertJsonPath('status', 'submitted');
+        $first->assertJsonPath('score_total', 202)
+            ->assertJsonPath('score_breakdown.0.correct_count', 1)
+            ->assertJsonPath('score_breakdown.0.final_score', 2);
 
         $this->getJson("/api/participant/attempts/{$attemptId}/result", $headers)
             ->assertOk()
-            ->assertJsonPath('status', 'submitted');
+            ->assertJsonPath('status', 'submitted')
+            ->assertJsonPath('score_total', 202);
 
         $scores = $this->getJson('/api/participant/scores', $headers)
             ->assertOk()
+            ->assertJsonPath('data.0.scores.verbal', 2)
+            ->assertJsonPath('data.0.scores.total', 202)
             ->assertJsonPath('data.0.certificate.certificate_no', "TPA-{$schedule->start_at->year}-".str_pad((string) $attemptId, 6, '0', STR_PAD_LEFT));
 
         $this->getJson('/api/certificates/data/'.$scores->json('data.0.certificate.certificate_no'))
@@ -75,6 +82,44 @@ class ExamFlowTest extends TestCase
         $this->assertDatabaseCount('exam_attempts', 1);
         $this->assertDatabaseCount('exam_scores', 1);
         $this->assertSame(1, ExamAttempt::firstOrFail()->answers()->count());
+    }
+
+    public function test_participant_scores_recalculate_legacy_completed_attempts(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $schedule = $this->createExamFixture($participant);
+
+        $login = $this->postJson('/api/auth/login', ['email' => 'peserta@tpka.com', 'password' => 'password'])
+            ->assertOk();
+        $headers = ['Authorization' => 'Bearer '.$login->json('token')];
+
+        $attemptId = $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
+            ->assertSuccessful()
+            ->json('id');
+        $questionId = ExamAttempt::findOrFail($attemptId)->attemptQuestions()->value('question_id');
+        $correctOptionId = QuestionOption::where('question_id', $questionId)
+            ->where('is_correct', true)
+            ->value('id');
+
+        $this->putJson("/api/participant/attempts/{$attemptId}/answers/{$questionId}", [
+            'question_option_id' => $correctOptionId,
+        ], $headers)->assertOk();
+
+        $this->postJson("/api/participant/attempts/{$attemptId}/submit", [], $headers)->assertOk();
+
+        ExamAttempt::whereKey($attemptId)->update([
+            'score_total' => 0,
+            'score_breakdown' => [],
+        ]);
+
+        ExamScore::query()->where('exam_attempt_id', $attemptId)->delete();
+
+        $this->getJson('/api/participant/scores', $headers)
+            ->assertOk()
+            ->assertJsonPath('data.0.score_total', 202)
+            ->assertJsonPath('data.0.scores.verbal', 2)
+            ->assertJsonPath('data.0.scores.total', 202);
     }
 
     public function test_participant_cannot_start_unregistered_schedule(): void
@@ -96,6 +141,8 @@ class ExamFlowTest extends TestCase
             'status' => 'published',
             'total_duration_minutes' => 30,
             'total_questions' => 2,
+            'base_score' => 200,
+            'correct_answer_score' => 2,
             'created_by' => $admin->id,
         ]);
         $section = ExamSection::create([

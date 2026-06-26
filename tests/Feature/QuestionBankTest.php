@@ -30,12 +30,15 @@ class QuestionBankTest extends TestCase
         $response->assertJsonPath('data.summary.verbal', 0)
             ->assertJsonPath('data.summary.kuantitatif', 0)
             ->assertJsonPath('data.summary.logika', 0)
-            ->assertJsonPath('data.summary.spasial', 0);
+            ->assertJsonPath('data.summary.spasial', 0)
+            ->assertJsonPath('data.base_score', 200)
+            ->assertJsonPath('data.correct_answer_score', 2);
 
         $this->assertDatabaseHas('exam_sections', ['question_package_id' => $response->json('data.id'), 'code' => 'verbal']);
         $this->assertDatabaseHas('exam_sections', ['question_package_id' => $response->json('data.id'), 'code' => 'kuantitatif']);
         $this->assertDatabaseHas('exam_sections', ['question_package_id' => $response->json('data.id'), 'code' => 'logika']);
         $this->assertDatabaseHas('exam_sections', ['question_package_id' => $response->json('data.id'), 'code' => 'spasial']);
+        $this->assertDatabaseHas('question_packages', ['id' => $response->json('data.id'), 'base_score' => 200, 'correct_answer_score' => 2]);
     }
 
     public function test_admin_can_create_text_image_and_text_plus_image_questions(): void

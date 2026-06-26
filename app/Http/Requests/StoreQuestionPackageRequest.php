@@ -17,6 +17,8 @@ class StoreQuestionPackageRequest extends FormRequest
             'name' => ['required', 'string', 'max:255'],
             'total_duration_minutes' => ['required', 'integer', 'min:1'],
             'target_total_questions' => ['nullable', 'integer', 'min:0'],
+            'base_score' => ['nullable', 'integer', 'min:0'],
+            'correct_answer_score' => ['nullable', 'integer', 'min:0'],
             'sections' => ['nullable', 'array'],
             'sections.*.code' => ['required_with:sections', 'in:verbal,kuantitatif,logika,spasial'],
             'sections.*.duration_minutes' => ['required_with:sections', 'integer', 'min:1'],

@@ -9,13 +9,18 @@ use App\Models\Payment;
 use App\Models\Schedule;
 use App\Models\User;
 use App\Services\CertificateDataService;
+use App\Services\ExamAttemptService;
 use App\Services\MidtransService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class ParticipantController extends Controller
 {
-    public function __construct(private CertificateDataService $certificateData, private MidtransService $midtrans) {}
+    public function __construct(
+        private CertificateDataService $certificateData,
+        private MidtransService $midtrans,
+        private ExamAttemptService $examAttemptService,
+    ) {}
 
     public function index(Request $request)
     {
@@ -116,7 +121,12 @@ class ParticipantController extends Controller
 
     public function scores(Request $request)
     {
-        $attempts = ExamAttempt::where('user_id', $request->user()->id)->whereIn('status', ['submitted', 'expired'])->with(['schedule', 'scores'])->latest()->get();
+        $attempts = ExamAttempt::where('user_id', $request->user()->id)
+            ->whereIn('status', ['submitted', 'expired'])
+            ->with(['schedule', 'scores', 'package.sections'])
+            ->latest()
+            ->get()
+            ->map(fn (ExamAttempt $attempt) => $this->examAttemptService->recalculateCompletedAttempt($attempt)->loadMissing(['schedule', 'scores', 'package.sections']));
 
         return ['status' => $request->get('status', 'all'), 'count' => $attempts->count(), 'data' => $attempts->map(fn ($a) => $this->scoreData($a))];
     }
@@ -125,7 +135,11 @@ class ParticipantController extends Controller
     {
         abort_unless($attempt->user_id === $request->user()->id, 403);
 
-        return $this->scoreData($attempt->load(['schedule', 'scores']));
+        return $this->scoreData(
+            $this->examAttemptService
+                ->recalculateCompletedAttempt($attempt)
+                ->loadMissing(['schedule', 'scores', 'package.sections'])
+        );
     }
 
     private function myScheduleData(ExamRegistration $r, int $userId): array
@@ -197,9 +211,25 @@ class ParticipantController extends Controller
 
     private function scoreData(ExamAttempt $a): array
     {
-        $by = $a->scores->keyBy('exam_section_id');
+        $scoresBySectionId = $a->scores->keyBy('exam_section_id');
+        $sectionScores = [
+            'verbal' => 0.0,
+            'kuantitatif' => 0.0,
+            'logika' => 0.0,
+            'spasial' => 0.0,
+        ];
+
+        foreach (($a->package?->sections ?? collect())->sortBy('order_number') as $section) {
+            $code = strtolower((string) ($section->code ?? ''));
+            if (! array_key_exists($code, $sectionScores)) {
+                continue;
+            }
+
+            $sectionScores[$code] = (float) ($scoresBySectionId->get($section->id)?->final_score ?? 0);
+        }
+
         $certificate = $a->scores->isNotEmpty() ? $this->certificateData->payload($a) : null;
 
-        return ['id' => $a->id, 'date' => $a->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $a->schedule->start_at->format('H:i:s'), 'end_time' => $a->schedule->end_at->format('H:i:s'), 'status' => $a->status, 'partner' => null, 'score_total' => (float) $a->score_total, 'score_breakdown' => $a->score_breakdown, 'scores' => ['verbal' => $by->values()->get(0)?->final_score, 'kuantitatif' => $by->values()->get(1)?->final_score, 'logika' => $by->values()->get(2)?->final_score, 'spasial' => $by->values()->get(3)?->final_score, 'total' => (float) $a->score_total], 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url']] : null];
+        return ['id' => $a->id, 'date' => $a->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $a->schedule->start_at->format('H:i:s'), 'end_time' => $a->schedule->end_at->format('H:i:s'), 'status' => $a->status, 'partner' => null, 'score_total' => (float) $a->score_total, 'score_breakdown' => $a->score_breakdown, 'scores' => [...$sectionScores, 'total' => (float) $a->score_total], 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url']] : null];
     }
 }

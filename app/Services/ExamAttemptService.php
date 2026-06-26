@@ -7,7 +7,6 @@ use App\Models\AttemptEvent;
 use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\ExamScore;
-use App\Models\Question;
 use App\Models\QuestionOption;
 use App\Models\Schedule;
 use App\Models\User;
@@ -70,40 +69,33 @@ class ExamAttemptService
             if (in_array($locked->status, ['submitted', 'expired'], true)) {
                 return $locked;
             }
-            $locked->load(['attemptQuestions', 'answers']);
-            $answers = $locked->answers->keyBy('question_id');
-            $questions = $locked->attemptQuestions->groupBy('exam_section_id');
-            $breakdown = [];
-            $totalRaw = 0;
-            $totalPossible = 0;
-            foreach ($questions as $sectionId => $rows) {
-                $correct = $wrong = $unanswered = 0;
-                $raw = $possible = 0;
-                foreach ($rows as $row) {
-                    $question = Question::findOrFail($row->question_id);
-                    $possible += (float) $question->score;
-                    $answer = $answers->get($row->question_id);
-                    if (! $answer || ! $answer->question_option_id) {
-                        $unanswered++;
-
-                        continue;
-                    }
-                    $ok = QuestionOption::whereKey($answer->question_option_id)->where('question_id', $row->question_id)->where('is_correct', true)->exists();
-                    if ($ok) {
-                        $correct++;
-                        $raw += (float) $question->score;
-                    } else {
-                        $wrong++;
-                    }
-                }
-                $final = $possible > 0 ? round($raw / $possible * 100, 2) : 0;
-                ExamScore::updateOrCreate(['exam_attempt_id' => $locked->id, 'exam_section_id' => $sectionId], ['correct_count' => $correct, 'wrong_count' => $wrong, 'unanswered_count' => $unanswered, 'raw_score' => $raw, 'final_score' => $final]);
-                $breakdown[] = ['section_id' => (int) $sectionId, 'correct_count' => $correct, 'wrong_count' => $wrong, 'unanswered_count' => $unanswered, 'raw_score' => $raw, 'final_score' => $final];
-                $totalRaw += $raw;
-                $totalPossible += $possible;
-            }
-            $locked->update(['status' => $expired || now()->greaterThan($locked->expires_at) ? 'expired' : 'submitted', 'submitted_at' => now(), 'score_total' => $totalPossible > 0 ? round($totalRaw / $totalPossible * 100, 2) : 0, 'score_breakdown' => $breakdown]);
+            $scores = $this->scoreAttempt($locked);
+            $locked->update([
+                'status' => $expired || now()->greaterThan($locked->expires_at) ? 'expired' : 'submitted',
+                'submitted_at' => now(),
+                'score_total' => $scores['score_total'],
+                'score_breakdown' => $scores['score_breakdown'],
+            ]);
             AttemptEvent::create(['exam_attempt_id' => $locked->id, 'type' => 'submitted', 'payload' => ['expired' => $expired]]);
+
+            return $locked->fresh('scores');
+        });
+    }
+
+    public function recalculateCompletedAttempt(ExamAttempt $attempt): ExamAttempt
+    {
+        if ($attempt->status === 'in_progress') {
+            return $attempt;
+        }
+
+        return DB::transaction(function () use ($attempt) {
+            $locked = ExamAttempt::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+            $scores = $this->scoreAttempt($locked);
+
+            $locked->update([
+                'score_total' => $scores['score_total'],
+                'score_breakdown' => $scores['score_breakdown'],
+            ]);
 
             return $locked->fresh('scores');
         });
@@ -116,5 +108,72 @@ class ExamAttemptService
             $this->submit($attempt, true);
             throw ValidationException::withMessages(['attempt' => 'Waktu ujian sudah habis.']);
         }
+    }
+
+    private function scoreAttempt(ExamAttempt $attempt): array
+    {
+        $attempt->loadMissing(['attemptQuestions', 'answers', 'package']);
+        $answers = $attempt->answers->keyBy('question_id');
+        $questions = $attempt->attemptQuestions->groupBy('exam_section_id');
+        $breakdown = [];
+        $totalCorrect = 0;
+        $baseScore = (int) ($attempt->package?->base_score ?? 200);
+        $correctAnswerScore = (int) ($attempt->package?->correct_answer_score ?? 2);
+
+        foreach ($questions as $sectionId => $rows) {
+            $correct = 0;
+            $wrong = 0;
+            $unanswered = 0;
+
+            foreach ($rows as $row) {
+                $answer = $answers->get($row->question_id);
+                if (! $answer || ! $answer->question_option_id) {
+                    $unanswered++;
+
+                    continue;
+                }
+
+                $isCorrect = QuestionOption::query()
+                    ->whereKey($answer->question_option_id)
+                    ->where('question_id', $row->question_id)
+                    ->where('is_correct', true)
+                    ->exists();
+
+                if ($isCorrect) {
+                    $correct++;
+                    $totalCorrect++;
+                } else {
+                    $wrong++;
+                }
+            }
+
+            $rawScore = (float) $correct;
+            $finalScore = (float) ($correct * $correctAnswerScore);
+
+            ExamScore::updateOrCreate(
+                ['exam_attempt_id' => $attempt->id, 'exam_section_id' => $sectionId],
+                [
+                    'correct_count' => $correct,
+                    'wrong_count' => $wrong,
+                    'unanswered_count' => $unanswered,
+                    'raw_score' => $rawScore,
+                    'final_score' => $finalScore,
+                ]
+            );
+
+            $breakdown[] = [
+                'section_id' => (int) $sectionId,
+                'correct_count' => $correct,
+                'wrong_count' => $wrong,
+                'unanswered_count' => $unanswered,
+                'raw_score' => $rawScore,
+                'final_score' => $finalScore,
+            ];
+        }
+
+        return [
+            'score_total' => (float) ($baseScore + ($totalCorrect * $correctAnswerScore)),
+            'score_breakdown' => $breakdown,
+        ];
     }
 }

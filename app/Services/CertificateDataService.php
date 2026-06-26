@@ -8,6 +8,8 @@ use Illuminate\Support\Str;
 
 class CertificateDataService
 {
+    public function __construct(private ExamAttemptService $examAttemptService) {}
+
     public function fromIdentifier(string $identifier): ?array
     {
         $attemptId = $this->attemptIdFromIdentifier($identifier);
@@ -30,6 +32,10 @@ class CertificateDataService
 
     public function payload(ExamAttempt $attempt): array
     {
+        if (in_array($attempt->status, ['submitted', 'expired'], true)) {
+            $attempt = $this->examAttemptService->recalculateCompletedAttempt($attempt);
+        }
+
         $attempt->loadMissing(['user', 'schedule', 'scores']);
         $template = Certificate::where('is_active', true)->latest()->first();
         $year = (int) ($attempt->submitted_at ?? $attempt->schedule->end_at ?? now())->format('Y');

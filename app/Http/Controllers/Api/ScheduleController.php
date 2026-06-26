@@ -4,15 +4,20 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreScheduleRequest;
+use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
+use App\Services\ExamAttemptService;
 use App\Services\PartnerInvitationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 
 class ScheduleController extends Controller
 {
+    public function __construct(private ExamAttemptService $examAttemptService) {}
+
     public function index(Request $request)
     {
         return Schedule::with(['package', 'registrations'])->when($request->filled('q'), fn ($q) => $q->where('title', 'like', '%'.$request->q.'%'))->latest()->paginate($request->integer('per_page', 10))->through(fn ($s) => $this->legacy($s));
@@ -32,7 +37,7 @@ class ScheduleController extends Controller
 
     public function show(Schedule $schedule)
     {
-        return $this->legacy($schedule->load(['package', 'registrations.user', 'attempts.scores']));
+        return $this->legacy($schedule->load(['package.sections', 'registrations.user', 'attempts.scores']));
     }
 
     public function update(StoreScheduleRequest $request, Schedule $schedule)
@@ -76,8 +81,54 @@ class ScheduleController extends Controller
     private function legacy(Schedule $s): array
     {
         $start = $s->start_at;
+        $attempts = $s->relationLoaded('attempts')
+            ? $s->attempts->map(function (ExamAttempt $attempt) {
+                if (in_array($attempt->status, ['submitted', 'expired'], true)) {
+                    return $this->examAttemptService->recalculateCompletedAttempt($attempt)->loadMissing(['scores', 'package.sections']);
+                }
 
-        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => (bool) ($s->is_partner || $s->partner_id), 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $s->package ? [['id' => $s->package->id, 'name' => $s->package->name, 'status' => $s->package->status, 'total_questions' => $s->package->total_questions, 'total_duration_minutes' => $s->package->total_duration_minutes]] : [], 'attempt_count' => $s->attempts->count(), 'submitted_count' => $s->attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(fn ($r) => ['id' => $r->user_id, 'name' => $r->user?->name, 'email' => $r->user?->email, 'status' => $r->status, 'scores' => $r->user ? $s->attempts->firstWhere('user_id', $r->user_id)?->score_breakdown : null])->values() : [], 'current_page' => 1, 'last_page' => 1, 'per_page' => 100, 'total' => $s->registrations->count()]];
+                return $attempt->loadMissing(['scores', 'package.sections']);
+            })
+            : collect();
+
+        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => (bool) ($s->is_partner || $s->partner_id), 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $s->package ? [['id' => $s->package->id, 'name' => $s->package->name, 'status' => $s->package->status, 'total_questions' => $s->package->total_questions, 'total_duration_minutes' => $s->package->total_duration_minutes]] : [], 'attempt_count' => $attempts->count(), 'submitted_count' => $attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(function ($r) use ($attempts) {
+            $attempt = $attempts->where('user_id', $r->user_id)->sortByDesc('id')->first();
+
+            return [
+                'id' => $r->user_id,
+                'name' => $r->user?->name,
+                'email' => $r->user?->email,
+                'status' => $r->status,
+                'scores' => $attempt ? $this->sectionScores($attempt) : null,
+            ];
+        })->values() : [], 'current_page' => 1, 'last_page' => 1, 'per_page' => 100, 'total' => $s->registrations->count()]];
+    }
+
+    private function sectionScores(ExamAttempt $attempt): array
+    {
+        $scoreMap = [
+            'verbal' => null,
+            'kuantitatif' => null,
+            'logika' => null,
+            'spasial' => null,
+            'total' => $attempt->score_total !== null ? (float) $attempt->score_total : null,
+        ];
+
+        $sections = $attempt->package?->sections instanceof Collection
+            ? $attempt->package->sections->sortBy('order_number')
+            : collect();
+        $scoresBySectionId = $attempt->scores->keyBy('exam_section_id');
+
+        foreach ($sections as $section) {
+            $code = strtolower((string) ($section->code ?? ''));
+            if (! array_key_exists($code, $scoreMap)) {
+                continue;
+            }
+
+            $scoreMap[$code] = (float) ($scoresBySectionId->get($section->id)?->final_score ?? 0);
+        }
+
+        return $scoreMap;
     }
 
     private function scheduleData(array $data, bool $creating = false): array

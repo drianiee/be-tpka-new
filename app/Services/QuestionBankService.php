@@ -71,6 +71,8 @@ class QuestionBankService
             'total_duration_minutes' => (int) $package->total_duration_minutes,
             'total_questions' => (int) $package->total_questions,
             'target_total_questions' => (int) $package->target_total_questions,
+            'base_score' => (int) $package->base_score,
+            'correct_answer_score' => (int) $package->correct_answer_score,
             'created_by' => $package->created_by,
             'created_at' => $package->created_at?->toISOString(),
             'updated_at' => $package->updated_at?->toISOString(),
