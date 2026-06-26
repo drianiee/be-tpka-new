@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Payment;
 use Midtrans\Config;
 use Midtrans\Snap;
+use Midtrans\Transaction;
 
 class MidtransService
 {
@@ -62,6 +63,15 @@ class MidtransService
             .(string) config('midtrans.server_key');
 
         return hash_equals(hash('sha512', $raw), $signature);
+    }
+
+    public function status(string $orderId): array
+    {
+        $this->configure();
+
+        $response = Transaction::status($orderId);
+
+        return json_decode(json_encode($response), true) ?: [];
     }
 
     private function configure(): void

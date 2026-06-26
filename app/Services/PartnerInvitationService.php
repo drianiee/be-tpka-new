@@ -87,7 +87,7 @@ class PartnerInvitationService
             'phone' => $row['phone'] ?? $user->phone,
             'identity_number' => $row['identity_number'] ?? $user->identity_number,
             'token_hash' => hash('sha256', $token),
-            'expires_at' => now()->addDays(2),
+            'expires_at' => now()->addDay(),
             'created_by' => $actor->id,
         ]);
 

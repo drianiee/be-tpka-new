@@ -12,6 +12,7 @@ use App\Services\CertificateDataService;
 use App\Services\ExamAttemptService;
 use App\Services\MidtransService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class ParticipantController extends Controller
@@ -107,14 +108,14 @@ class ParticipantController extends Controller
 
     public function mySchedules(Request $request)
     {
-        $regs = ExamRegistration::where('user_id', $request->user()->id)->with(['schedule.package', 'schedule.partner', 'payment'])->get();
+        $regs = ExamRegistration::where('user_id', $request->user()->id)->with(['schedule.package', 'schedule.partner', 'payment', 'payments'])->get();
 
         return ['status' => $request->get('status', 'all'), 'count' => $regs->count(), 'data' => $regs->map(fn ($r) => $this->myScheduleData($r, $request->user()->id))];
     }
 
     public function mySchedule(Request $request, Schedule $schedule)
     {
-        $reg = ExamRegistration::where('user_id', $request->user()->id)->where('schedule_id', $schedule->id)->with(['schedule.package', 'schedule.partner', 'payment'])->firstOrFail();
+        $reg = ExamRegistration::where('user_id', $request->user()->id)->where('schedule_id', $schedule->id)->with(['schedule.package', 'schedule.partner', 'payment', 'payments'])->firstOrFail();
 
         return $this->myScheduleData($reg, $request->user()->id);
     }
@@ -146,9 +147,92 @@ class ParticipantController extends Controller
     {
         $s = $r->schedule;
         $attempt = ExamAttempt::where('user_id', $userId)->where('schedule_id', $s->id)->latest()->first();
-        $payment = $r->payment;
+        $payment = $this->resolvedPayment($r);
+        $isPartnerSchedule = (bool) ($s->is_partner || $s->partner_id);
+        $participantStatus = $this->participantStatusPayload($r, $isPartnerSchedule, $payment);
 
-        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => (bool) ($s->is_partner || $s->partner_id), 'price' => (string) $s->price, 'payment_status' => $payment?->transaction_status ?? $r->status, 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $r->access_status === 'unlocked' && $s->status === 'published' && now()->between($s->start_at, $s->end_at), 'has_attempt' => (bool) $attempt, 'attempt_id' => $attempt?->id, 'question_package' => ['id' => $s->package->id, 'name' => $s->package->name, 'total_duration_minutes' => $s->package->total_duration_minutes, 'total_questions' => $s->package->total_questions]];
+        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $r->access_status === 'unlocked' && $s->status === 'published' && now()->between($s->start_at, $s->end_at), 'has_attempt' => (bool) $attempt, 'attempt_id' => $attempt?->id, 'question_package' => ['id' => $s->package->id, 'name' => $s->package->name, 'total_duration_minutes' => $s->package->total_duration_minutes, 'total_questions' => $s->package->total_questions]];
+    }
+
+    private function resolvedPayment(ExamRegistration $registration): ?Payment
+    {
+        $payments = $registration->relationLoaded('payments')
+            ? $registration->payments
+            : $registration->payments()->latest('id')->get();
+
+        if (! $payments instanceof Collection || $payments->isEmpty()) {
+            return $registration->relationLoaded('payment') ? $registration->payment : $registration->payment()->first();
+        }
+
+        $paid = $payments->first(fn (Payment $payment) => $this->isPaidPayment($payment));
+        if ($paid) {
+            return $paid;
+        }
+
+        $pending = $payments->first(fn (Payment $payment) => strtolower((string) $payment->transaction_status) === 'pending');
+        if ($pending) {
+            return $pending;
+        }
+
+        return $payments->first();
+    }
+
+    private function effectivePaymentStatus(ExamRegistration $registration, ?Payment $payment, bool $isPartnerSchedule): string
+    {
+        if ($isPartnerSchedule) {
+            return $registration->user?->email_verified_at ? 'confirmed_email' : 'unconfirmed_email';
+        }
+
+        if (
+            $registration->access_status === 'unlocked'
+            || $registration->status === 'approved'
+            || $this->isPaidPayment($payment)
+        ) {
+            return 'paid';
+        }
+
+        $paymentStatus = strtolower((string) ($payment?->transaction_status ?? ''));
+        if (in_array($paymentStatus, ['deny', 'cancel', 'cancelled', 'expire', 'expired', 'failure'], true)) {
+            return $paymentStatus;
+        }
+
+        if ($registration->status === 'expired') {
+            return 'expired';
+        }
+
+        if ($registration->status === 'cancelled') {
+            return 'cancelled';
+        }
+
+        return 'pending_payment';
+    }
+
+    private function participantStatusPayload(ExamRegistration $registration, bool $isPartnerSchedule, ?Payment $payment): array
+    {
+        if ($isPartnerSchedule) {
+            return $registration->user?->email_verified_at
+                ? ['key' => 'confirmed_email', 'label' => 'Telah konfirmasi email']
+                : ['key' => 'unconfirmed_email', 'label' => 'Belum konfirmasi email'];
+        }
+
+        return (
+            $registration->access_status === 'unlocked'
+            || $registration->status === 'approved'
+            || $this->isPaidPayment($payment)
+        )
+            ? ['key' => 'payment_completed', 'label' => 'Telah melakukan pembayaran']
+            : ['key' => 'payment_pending', 'label' => 'Belum melakukan pembayaran'];
+    }
+
+    private function isPaidPayment(?Payment $payment): bool
+    {
+        if (! $payment) {
+            return false;
+        }
+
+        $status = strtolower((string) $payment->transaction_status);
+
+        return in_array($status, ['capture', 'settlement', 'paid'], true) || $payment->paid_at !== null;
     }
 
     private function createPendingPayment(ExamRegistration $registration, Schedule $schedule, User $user, bool $forceNew = false): Payment

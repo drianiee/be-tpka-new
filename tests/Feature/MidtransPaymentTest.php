@@ -9,6 +9,7 @@ use App\Models\Question;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
 use App\Models\User;
+use App\Services\MidtransService;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -162,6 +163,56 @@ class MidtransPaymentTest extends TestCase
 
         $this->assertDatabaseCount('payments', 2);
         $this->assertNotSame($firstPayment->order_id, Payment::latest('id')->firstOrFail()->order_id);
+    }
+
+    public function test_finish_sync_updates_pending_payment_from_midtrans_status_api(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(150000);
+
+        $this->actingAs($participant, 'sanctum')
+            ->postJson("/api/participant/schedules/{$schedule->id}/register")
+            ->assertSuccessful()
+            ->assertJsonPath('registration.status', 'pending_payment');
+
+        $payment = Payment::firstOrFail();
+        $grossAmount = number_format((float) $payment->amount, 2, '.', '');
+        $midtrans = \Mockery::mock(MidtransService::class);
+        $midtrans->shouldReceive('status')
+            ->once()
+            ->with($payment->order_id)
+            ->andReturn([
+                'order_id' => $payment->order_id,
+                'transaction_id' => 'midtrans-sync-'.$payment->id,
+                'transaction_status' => 'settlement',
+                'status_code' => '200',
+                'gross_amount' => $grossAmount,
+                'payment_type' => 'bank_transfer',
+                'transaction_time' => now()->format('Y-m-d H:i:s'),
+                'settlement_time' => now()->format('Y-m-d H:i:s'),
+                'va_numbers' => [['bank' => 'bca', 'va_number' => '12345678901']],
+            ]);
+        $this->app->instance(MidtransService::class, $midtrans);
+
+        $this->actingAs($participant, 'sanctum')
+            ->postJson('/api/participant/payments/midtrans/sync', [
+                'order_id' => $payment->order_id,
+            ])
+            ->assertOk()
+            ->assertJsonPath('payment.transaction_status', 'settlement')
+            ->assertJsonPath('registration.status', 'approved')
+            ->assertJsonPath('registration.access_status', 'unlocked');
+
+        $payment->refresh();
+        $registration = ExamRegistration::where('user_id', $participant->id)
+            ->where('schedule_id', $schedule->id)
+            ->firstOrFail();
+
+        $this->assertSame('settlement', $payment->transaction_status);
+        $this->assertNotNull($payment->paid_at);
+        $this->assertSame('approved', $registration->status);
+        $this->assertSame('unlocked', $registration->access_status);
     }
 
     private function callbackPayload(Payment $payment, string $transactionStatus = 'settlement'): array

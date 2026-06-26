@@ -59,6 +59,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedules/{schedule}/participants', [ScheduleController::class, 'addParticipant']);
         Route::delete('schedules/{schedule}/participants/{userId}', [ScheduleController::class, 'removeParticipant']);
         Route::get('schedules/{schedule}/participants/export', fn () => ['message' => 'Export belum diaktifkan.', 'download_url' => null]);
+        Route::get('schedules/{schedule}/partner/import-template', [ScheduleController::class, 'partnerImportTemplate']);
         Route::post('schedules/{schedule}/partner/import', [ScheduleController::class, 'importPartnerParticipants']);
 
         Route::get('participants', [ParticipantController::class, 'index']);
@@ -66,7 +67,22 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::get('partners', fn (Request $r) => Partner::paginate($r->integer('per_page', 10)));
         Route::post('partners', function (Request $r) {
-            $p = Partner::create($r->validate(['name' => 'required|string', 'code' => 'nullable|string|unique:partners', 'contact_name' => 'nullable|string', 'contact_email' => 'nullable|email', 'contact_phone' => 'nullable|string', 'is_active' => 'nullable|boolean']));
+            $data = $r->validate([
+                'name' => 'required|string',
+                'contact_name' => 'nullable|string',
+                'contact_email' => 'nullable|email',
+                'contact_phone' => 'nullable|string',
+            ]);
+            $next = 1;
+            do {
+                $code = sprintf('MTR-%04d', $next++);
+            } while (Partner::where('code', $code)->exists());
+
+            $p = Partner::create([
+                ...$data,
+                'code' => $code,
+                'is_active' => true,
+            ]);
 
             return response()->json(['message' => 'Mitra dibuat.', 'partner' => $p], 201);
         });
@@ -118,6 +134,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedules/{schedule}/pay', [ParticipantController::class, 'register']);
         Route::get('my-schedules', [ParticipantController::class, 'mySchedules']);
         Route::get('my-schedules/{schedule}', [ParticipantController::class, 'mySchedule']);
+        Route::post('payments/midtrans/sync', [PaymentController::class, 'sync']);
         Route::post('schedules/{schedule}/attempts', [ExamAttemptController::class, 'start']);
         Route::get('attempts/{attempt}', [ExamAttemptController::class, 'show']);
         Route::put('attempts/{attempt}/answers/{questionId}', [ExamAttemptController::class, 'answer']);

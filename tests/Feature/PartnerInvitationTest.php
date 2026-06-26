@@ -99,6 +99,39 @@ class PartnerInvitationTest extends TestCase
         Mail::assertNotSent(PartnerProfileInvitationMail::class);
     }
 
+    public function test_import_existing_user_does_not_overwrite_account_name(): void
+    {
+        Mail::fake();
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(true);
+        $user = User::create([
+            'name' => 'Andrian',
+            'email' => 'andrian@example.com',
+            'password' => 'Password=1',
+            'role' => 'peserta',
+            'is_active' => true,
+            'email_verified_at' => now(),
+            'profile_completed_at' => now(),
+        ]);
+
+        $this->actingAs($admin, 'sanctum')
+            ->post("/api/schedules/{$schedule->id}/partner/import", [
+                'file' => $this->csvUpload("name,email\nAri,andrian@example.com\n"),
+            ], ['Accept' => 'application/json'])
+            ->assertOk()
+            ->assertJsonPath('summary.created_users', 0)
+            ->assertJsonPath('summary.attached_to_schedule', 1);
+
+        $this->assertSame('Andrian', $user->fresh()->name);
+        $this->assertDatabaseHas('exam_registrations', [
+            'user_id' => $user->id,
+            'schedule_id' => $schedule->id,
+            'status' => 'approved',
+            'access_status' => 'unlocked',
+        ]);
+    }
+
     public function test_partner_onboarding_claim_completes_profile_and_allows_start_without_payment(): void
     {
         Storage::fake('public');

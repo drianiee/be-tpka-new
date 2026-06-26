@@ -6,6 +6,7 @@ use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\ExamScore;
 use App\Models\ExamSection;
+use App\Models\Payment;
 use App\Models\Question;
 use App\Models\QuestionOption;
 use App\Models\QuestionPackage;
@@ -130,6 +131,39 @@ class ExamFlowTest extends TestCase
         $schedule->registrations()->where('user_id', $participant->id)->delete();
         $this->actingAs($participant, 'sanctum')->postJson("/api/participant/schedules/{$schedule->id}/attempts")
             ->assertForbidden()->assertJsonPath('message', 'Pendaftaran belum ditemukan.');
+    }
+
+    public function test_participant_my_schedule_marks_unlocked_regular_schedule_as_paid(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $schedule = $this->createExamFixture($participant);
+        $registration = ExamRegistration::where('user_id', $participant->id)
+            ->where('schedule_id', $schedule->id)
+            ->firstOrFail();
+
+        Payment::create([
+            'user_id' => $participant->id,
+            'schedule_id' => $schedule->id,
+            'exam_registration_id' => $registration->id,
+            'order_id' => 'TPKA-TEST-PENDING',
+            'amount' => 150000,
+            'transaction_status' => 'pending',
+        ]);
+
+        $login = $this->postJson('/api/auth/login', ['email' => 'peserta@tpka.com', 'password' => 'password'])
+            ->assertOk();
+        $headers = ['Authorization' => 'Bearer '.$login->json('token')];
+
+        $this->getJson('/api/participant/my-schedules', $headers)
+            ->assertOk()
+            ->assertJsonPath('data.0.participant_status_label', 'Telah melakukan pembayaran')
+            ->assertJsonPath('data.0.payment_status', 'paid');
+
+        $this->getJson("/api/participant/my-schedules/{$schedule->id}", $headers)
+            ->assertOk()
+            ->assertJsonPath('participant_status_label', 'Telah melakukan pembayaran')
+            ->assertJsonPath('payment_status', 'paid');
     }
 
     private function createExamFixture(User $participant): Schedule

@@ -16,7 +16,7 @@
         Konfirmasi dan Lengkapi Profil
       </a>
     </p>
-    <p>Link ini berlaku selama 2 hari.</p>
+    <p>Link ini berlaku selama 1 hari.</p>
     <p style="word-break: break-all; color: #475569;">{{ $onboardingUrl }}</p>
     <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;">
     <p style="font-size: 12px; color: #64748b;">TPKA ITS</p>

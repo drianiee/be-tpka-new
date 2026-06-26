@@ -42,6 +42,44 @@ class PaymentController extends Controller
 
         $payment = Payment::where('order_id', $payload['order_id'] ?? null)->firstOrFail();
 
+        $this->applyPaymentStatus($payment, $payload);
+
+        return ['status' => 'ok', 'message' => 'Callback processed.', 'order_id' => $payment->order_id];
+    }
+
+    public function sync(Request $request, MidtransService $midtrans)
+    {
+        $data = $request->validate([
+            'order_id' => ['required', 'string'],
+        ]);
+
+        $payment = Payment::where('order_id', $data['order_id'])
+            ->with('registration')
+            ->firstOrFail();
+
+        if (
+            $request->user()
+            && ! in_array($request->user()->role, ['administrator', 'operator'], true)
+            && (int) $payment->user_id !== (int) $request->user()->id
+        ) {
+            abort(403, 'Anda tidak memiliki akses ke pembayaran ini.');
+        }
+
+        $payload = $midtrans->status($payment->order_id);
+        $this->applyPaymentStatus($payment, $payload);
+
+        $payment->refresh();
+        $payment->load('registration');
+
+        return [
+            'message' => 'Status pembayaran disinkronkan.',
+            'payment' => $payment,
+            'registration' => $payment->registration,
+        ];
+    }
+
+    private function applyPaymentStatus(Payment $payment, array $payload): void
+    {
         DB::transaction(function () use ($payment, $payload) {
             $status = (string) ($payload['transaction_status'] ?? $payment->transaction_status);
             $fraud = $payload['fraud_status'] ?? null;
@@ -51,14 +89,14 @@ class PaymentController extends Controller
                 'transaction_status' => $status,
                 'payment_type' => $payload['payment_type'] ?? $payment->payment_type,
                 'fraud_status' => $fraud,
-                'status_code' => $payload['status_code'] ?? $payment->status_code,
+                'status_code' => isset($payload['status_code']) ? (string) $payload['status_code'] : $payment->status_code,
                 'status_message' => $payload['status_message'] ?? $payment->status_message,
                 'bank' => $payload['bank'] ?? $payload['permata_va_number'] ?? $payment->bank,
                 'va_number' => $payload['va_number'] ?? $payload['permata_va_number'] ?? $this->firstVaNumber($payload) ?? $payment->va_number,
                 'va_numbers' => $payload['va_numbers'] ?? $payment->va_numbers,
                 'transaction_time' => $payload['transaction_time'] ?? $payment->transaction_time,
                 'settlement_time' => $payload['settlement_time'] ?? $payment->settlement_time,
-                'payload' => $payload,
+                'payload' => $payload !== [] ? $payload : $payment->payload,
             ]);
 
             $registration = $payment->registration;
@@ -80,8 +118,6 @@ class PaymentController extends Controller
                 ]);
             }
         });
-
-        return ['status' => 'ok', 'message' => 'Callback processed.', 'order_id' => $payment->order_id];
     }
 
     private function firstVaNumber(array $payload): ?string
