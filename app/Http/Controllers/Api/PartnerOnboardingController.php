@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ExamRegistration;
 use App\Services\PartnerInvitationService;
 use Illuminate\Http\Request;
 
@@ -79,7 +80,7 @@ class PartnerOnboardingController extends Controller
             'token' => $user->createToken('frontend')->plainTextToken,
             'schedule_id' => $invitation->schedule_id,
             'partner' => $invitation->schedule->partner ? ['id' => $invitation->schedule->partner->id, 'name' => $invitation->schedule->partner->name] : null,
-            'package_id' => $invitation->schedule->question_package_id,
+            'package_id' => ExamRegistration::where('user_id', $user->id)->where('schedule_id', $invitation->schedule_id)->value('question_package_id'),
             'redirect_to' => '/dashboard/peserta/my-schedules/'.$invitation->schedule_id,
         ];
     }

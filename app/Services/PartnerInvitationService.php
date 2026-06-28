@@ -18,6 +18,8 @@ use ZipArchive;
 
 class PartnerInvitationService
 {
+    public function __construct(private QuestionPackageAssignmentService $packageAssignments) {}
+
     public function import(Schedule $schedule, UploadedFile $file, User $actor): array
     {
         abort_unless($schedule->is_partner || $schedule->partner_id, 422, 'Jadwal ini bukan jadwal mitra.');
@@ -53,10 +55,21 @@ class PartnerInvitationService
                     $summary['created_users']++;
                 }
 
-                ExamRegistration::updateOrCreate(
-                    ['user_id' => $user->id, 'schedule_id' => $schedule->id],
-                    ['payment_id' => null, 'status' => 'approved', 'access_status' => 'unlocked', 'registration_source' => 'import', 'registered_at' => now()],
-                );
+                $registration = ExamRegistration::firstOrNew([
+                    'user_id' => $user->id,
+                    'schedule_id' => $schedule->id,
+                ]);
+                $registration->fill([
+                    'payment_id' => null,
+                    'status' => 'approved',
+                    'access_status' => 'unlocked',
+                    'registration_source' => 'import',
+                    'registered_at' => now(),
+                ]);
+                if (! $registration->question_package_id) {
+                    $registration->question_package_id = $this->packageAssignments->pickRandomPackage($schedule)->id;
+                }
+                $registration->save();
                 $summary['attached_to_schedule']++;
 
                 if (! $user->profile_completed_at) {

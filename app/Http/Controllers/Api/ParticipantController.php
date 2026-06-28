@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Services\CertificateDataService;
 use App\Services\ExamAttemptService;
 use App\Services\MidtransService;
+use App\Services\QuestionPackageAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -21,6 +22,7 @@ class ParticipantController extends Controller
         private CertificateDataService $certificateData,
         private MidtransService $midtrans,
         private ExamAttemptService $examAttemptService,
+        private QuestionPackageAssignmentService $packageAssignments,
     ) {}
 
     public function index(Request $request)
@@ -57,6 +59,11 @@ class ParticipantController extends Controller
         $free = (float) $schedule->price <= 0.0;
         $existing = ExamRegistration::where('user_id', $user->id)->where('schedule_id', $schedule->id)->with('payment')->first();
         if ($existing) {
+            if (! $existing->question_package_id) {
+                $existing->update([
+                    'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
+                ]);
+            }
             if ($existing->access_status === 'unlocked') {
                 return $this->registrationResponse('Registration already approved.', $existing->load('payment'), null);
             }
@@ -83,6 +90,7 @@ class ParticipantController extends Controller
             $registration = ExamRegistration::create([
                 'user_id' => $user->id,
                 'schedule_id' => $schedule->id,
+                'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
                 'status' => 'approved',
                 'access_status' => 'unlocked',
                 'registration_source' => 'self',
@@ -95,6 +103,7 @@ class ParticipantController extends Controller
         $registration = DB::transaction(fn () => ExamRegistration::create([
             'user_id' => $user->id,
             'schedule_id' => $schedule->id,
+            'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
             'status' => 'pending_payment',
             'access_status' => 'locked',
             'registration_source' => 'self',
@@ -108,14 +117,14 @@ class ParticipantController extends Controller
 
     public function mySchedules(Request $request)
     {
-        $regs = ExamRegistration::where('user_id', $request->user()->id)->with(['schedule.package', 'schedule.partner', 'payment', 'payments'])->get();
+        $regs = ExamRegistration::where('user_id', $request->user()->id)->with(['schedule.package', 'schedule.partner', 'package', 'payment', 'payments'])->get();
 
         return ['status' => $request->get('status', 'all'), 'count' => $regs->count(), 'data' => $regs->map(fn ($r) => $this->myScheduleData($r, $request->user()->id))];
     }
 
     public function mySchedule(Request $request, Schedule $schedule)
     {
-        $reg = ExamRegistration::where('user_id', $request->user()->id)->where('schedule_id', $schedule->id)->with(['schedule.package', 'schedule.partner', 'payment', 'payments'])->firstOrFail();
+        $reg = ExamRegistration::where('user_id', $request->user()->id)->where('schedule_id', $schedule->id)->with(['schedule.package', 'schedule.partner', 'package', 'payment', 'payments'])->firstOrFail();
 
         return $this->myScheduleData($reg, $request->user()->id);
     }
@@ -150,8 +159,10 @@ class ParticipantController extends Controller
         $payment = $this->resolvedPayment($r);
         $isPartnerSchedule = (bool) ($s->is_partner || $s->partner_id);
         $participantStatus = $this->participantStatusPayload($r, $isPartnerSchedule, $payment);
+        $assignedPackage = $r->relationLoaded('package') ? $r->package : $r->package()->first();
+        $displayPackage = $assignedPackage ?: $s->package;
 
-        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $r->access_status === 'unlocked' && $s->status === 'published' && now()->between($s->start_at, $s->end_at), 'has_attempt' => (bool) $attempt, 'attempt_id' => $attempt?->id, 'question_package' => ['id' => $s->package->id, 'name' => $s->package->name, 'total_duration_minutes' => $s->package->total_duration_minutes, 'total_questions' => $s->package->total_questions]];
+        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $r->access_status === 'unlocked' && $s->status === 'published' && now()->between($s->start_at, $s->end_at), 'has_attempt' => (bool) $attempt, 'attempt_id' => $attempt?->id, 'attempt_status' => $attempt?->status, 'question_package' => $displayPackage ? ['id' => $displayPackage->id, 'name' => $displayPackage->name, 'total_duration_minutes' => $displayPackage->total_duration_minutes, 'total_questions' => $displayPackage->total_questions] : null];
     }
 
     private function resolvedPayment(ExamRegistration $registration): ?Payment
@@ -273,6 +284,7 @@ class ParticipantController extends Controller
     private function registrationResponse(string $message, ExamRegistration $registration, ?Payment $payment): array
     {
         $schedule = $registration->schedule()->with('package')->firstOrFail();
+        $package = $registration->package()->first() ?: $schedule->package;
 
         return [
             'message' => $message,
@@ -280,7 +292,7 @@ class ParticipantController extends Controller
             'registration' => ['id' => $registration->id, 'status' => $registration->status, 'access_status' => $registration->access_status],
             'payment' => $payment ? ['id' => $payment->id, 'order_id' => $payment->order_id, 'amount' => (float) $payment->amount, 'transaction_status' => $payment->transaction_status, 'snap_token' => $payment->snap_token, 'snap_redirect_url' => $payment->snap_redirect_url] : null,
             'midtrans' => $payment ? ['client_key' => config('midtrans.client_key'), 'snap_token' => $payment->snap_token, 'redirect_url' => $payment->snap_redirect_url] : null,
-            'data' => ['schedule_id' => $schedule->id, 'registration_id' => $registration->id, 'payment_id' => $payment?->id, 'order_id' => $payment?->order_id, 'snap_token' => $payment?->snap_token, 'redirect_url' => $payment?->snap_redirect_url, 'amount' => (float) ($payment?->amount ?? $schedule->price), 'picked' => ['question_package_id' => $schedule->question_package_id, 'package_name' => $schedule->package->name]],
+            'data' => ['schedule_id' => $schedule->id, 'registration_id' => $registration->id, 'payment_id' => $payment?->id, 'order_id' => $payment?->order_id, 'snap_token' => $payment?->snap_token, 'redirect_url' => $payment?->snap_redirect_url, 'amount' => (float) ($payment?->amount ?? $schedule->price), 'picked' => $package ? ['question_package_id' => $package->id, 'package_name' => $package->name] : null],
         ];
     }
 

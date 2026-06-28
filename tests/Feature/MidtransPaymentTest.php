@@ -48,6 +48,11 @@ class MidtransPaymentTest extends TestCase
             'access_status' => 'unlocked',
             'registration_source' => 'self',
         ]);
+        $this->assertNotNull(
+            ExamRegistration::where('user_id', $participant->id)
+                ->where('schedule_id', $schedule->id)
+                ->value('question_package_id')
+        );
         $this->assertDatabaseCount('payments', 0);
     }
 
@@ -215,6 +220,49 @@ class MidtransPaymentTest extends TestCase
         $this->assertSame('unlocked', $registration->access_status);
     }
 
+    public function test_schedule_can_be_created_without_manual_package_selection(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $package = $this->createPackage('Paket Acak A');
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson('/api/schedules', [
+                'start_at' => now()->addDay()->format('Y-m-d\TH:i'),
+                'registration_start_at' => now()->format('Y-m-d\TH:i'),
+                'registration_end_at' => now()->addHours(6)->format('Y-m-d\TH:i'),
+                'price' => 150000,
+                'quota' => 50,
+                'is_partner' => false,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.question_package_id', $package->id);
+    }
+
+    public function test_attempt_uses_package_assigned_to_registration(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(0);
+        $assignedPackage = $this->createPackage('Paket Acak B');
+
+        $this->actingAs($participant, 'sanctum')
+            ->postJson("/api/participant/schedules/{$schedule->id}/register")
+            ->assertSuccessful();
+
+        ExamRegistration::where('user_id', $participant->id)
+            ->where('schedule_id', $schedule->id)
+            ->update([
+                'question_package_id' => $assignedPackage->id,
+            ]);
+
+        $this->actingAs($participant, 'sanctum')
+            ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
+            ->assertSuccessful()
+            ->assertJsonPath('question_package.id', $assignedPackage->id)
+            ->assertJsonPath('question_package.name', $assignedPackage->name);
+    }
+
     private function callbackPayload(Payment $payment, string $transactionStatus = 'settlement'): array
     {
         $grossAmount = number_format((float) $payment->amount, 2, '.', '');
@@ -237,8 +285,28 @@ class MidtransPaymentTest extends TestCase
     private function createSchedule(float $price, bool $partner = false): Schedule
     {
         $admin = User::where('role', 'administrator')->firstOrFail();
+        $package = $this->createPackage('Paket TPA Midtrans Test');
+
+        return Schedule::create([
+            'question_package_id' => $package->id,
+            'title' => 'Jadwal Midtrans Test',
+            'start_at' => now()->subMinute(),
+            'end_at' => now()->addMinutes($package->total_duration_minutes),
+            'registration_start_at' => now()->subDay(),
+            'registration_end_at' => now()->addDay(),
+            'price' => $price,
+            'quota' => 100,
+            'status' => 'published',
+            'is_partner' => $partner,
+            'created_by' => $admin->id,
+        ]);
+    }
+
+    private function createPackage(string $name): QuestionPackage
+    {
+        $admin = User::where('role', 'administrator')->firstOrFail();
         $package = QuestionPackage::create([
-            'name' => 'Paket TPA Midtrans Test',
+            'name' => $name,
             'status' => 'published',
             'total_duration_minutes' => 30,
             'total_questions' => 1,
@@ -271,18 +339,6 @@ class MidtransPaymentTest extends TestCase
             ]);
         }
 
-        return Schedule::create([
-            'question_package_id' => $package->id,
-            'title' => 'Jadwal Midtrans Test',
-            'start_at' => now()->subMinute(),
-            'end_at' => now()->addMinutes($package->total_duration_minutes),
-            'registration_start_at' => now()->subDay(),
-            'registration_end_at' => now()->addDay(),
-            'price' => $price,
-            'quota' => 100,
-            'status' => 'published',
-            'is_partner' => $partner,
-            'created_by' => $admin->id,
-        ]);
+        return $package;
     }
 }

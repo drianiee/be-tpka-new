@@ -11,13 +11,18 @@ use App\Models\QuestionPackage;
 use App\Models\Schedule;
 use App\Services\ExamAttemptService;
 use App\Services\PartnerInvitationService;
+use App\Services\QuestionPackageAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Validation\ValidationException;
 
 class ScheduleController extends Controller
 {
-    public function __construct(private ExamAttemptService $examAttemptService) {}
+    public function __construct(
+        private ExamAttemptService $examAttemptService,
+        private QuestionPackageAssignmentService $packageAssignments,
+    ) {}
 
     public function index(Request $request)
     {
@@ -38,7 +43,7 @@ class ScheduleController extends Controller
 
     public function show(Schedule $schedule)
     {
-        return $this->legacy($schedule->load(['package.sections', 'registrations.user', 'registrations.payment', 'registrations.payments', 'attempts.scores']));
+        return $this->legacy($schedule->load(['package.sections', 'registrations.user', 'registrations.package', 'registrations.payment', 'registrations.payments', 'attempts.scores']));
     }
 
     public function update(StoreScheduleRequest $request, Schedule $schedule)
@@ -59,7 +64,18 @@ class ScheduleController extends Controller
     public function addParticipant(Request $request, Schedule $schedule)
     {
         $data = $request->validate(['user_id' => ['required', 'exists:users,id']]);
-        ExamRegistration::updateOrCreate(['user_id' => $data['user_id'], 'schedule_id' => $schedule->id], ['payment_id' => null, 'status' => 'approved', 'access_status' => 'unlocked', 'registration_source' => $schedule->partner_id || $schedule->is_partner ? 'partner' : 'admin', 'registered_at' => now()]);
+        $registration = ExamRegistration::firstOrNew(['user_id' => $data['user_id'], 'schedule_id' => $schedule->id]);
+        $registration->fill([
+            'payment_id' => null,
+            'status' => 'approved',
+            'access_status' => 'unlocked',
+            'registration_source' => $schedule->partner_id || $schedule->is_partner ? 'partner' : 'admin',
+            'registered_at' => now(),
+        ]);
+        if (! $registration->question_package_id) {
+            $registration->question_package_id = $this->packageAssignments->pickRandomPackage($schedule)->id;
+        }
+        $registration->save();
 
         return ['message' => 'Peserta ditambahkan.', 'schedule' => $this->legacy($schedule->fresh(['package', 'registrations']))];
     }
@@ -105,11 +121,13 @@ class ScheduleController extends Controller
             : collect();
 
         $isPartnerSchedule = (bool) ($s->is_partner || $s->partner_id);
+        $availablePackages = $this->packageAssignments->availablePackages($s);
 
-        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $s->package ? [['id' => $s->package->id, 'name' => $s->package->name, 'status' => $s->package->status, 'total_questions' => $s->package->total_questions, 'total_duration_minutes' => $s->package->total_duration_minutes]] : [], 'attempt_count' => $attempts->count(), 'submitted_count' => $attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(function ($r) use ($attempts, $isPartnerSchedule) {
+        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $availablePackages->map(fn ($package) => ['id' => $package->id, 'name' => $package->name, 'status' => $package->status, 'total_questions' => $package->total_questions, 'total_duration_minutes' => $package->total_duration_minutes])->values(), 'attempt_count' => $attempts->count(), 'submitted_count' => $attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(function ($r) use ($attempts, $isPartnerSchedule) {
             $attempt = $attempts->where('user_id', $r->user_id)->sortByDesc('id')->first();
             $payment = $this->resolvedRegistrationPayment($r);
             $statusMeta = $this->registrationStatusMeta($r, $isPartnerSchedule, $payment);
+            $package = $r->package;
 
             return [
                 'id' => $r->user_id,
@@ -119,6 +137,7 @@ class ScheduleController extends Controller
                 'status_label' => $statusMeta['label'],
                 'status_variant' => $statusMeta['variant'],
                 'email_verified_at' => $r->user?->email_verified_at?->toISOString(),
+                'question_package' => $package ? ['id' => $package->id, 'name' => $package->name] : null,
                 'scores' => $attempt ? $this->sectionScores($attempt) : null,
             ];
         })->values() : [], 'current_page' => 1, 'last_page' => 1, 'per_page' => 100, 'total' => $s->registrations->count()]];
@@ -355,12 +374,20 @@ XML;
 
     private function scheduleData(array $data, bool $creating = false): array
     {
-        $package = QuestionPackage::findOrFail($data['question_package_id']);
+        $package = ! empty($data['question_package_id'])
+            ? QuestionPackage::findOrFail($data['question_package_id'])
+            : $this->packageAssignments->availablePackages()->sortBy('id')->first();
+
+        throw_if(! $package, ValidationException::withMessages([
+            'package' => 'Buat minimal satu paket soal published sebelum membuat jadwal.',
+        ]));
+
+        $data['question_package_id'] = $package->id;
         if (empty($data['end_at'])) {
             $data['end_at'] = Carbon::parse($data['start_at'])->addMinutes((int) $package->total_duration_minutes);
         }
         if ($creating) {
-            $data['title'] = $package->name.' - '.Carbon::parse($data['start_at'])->format('d/m/Y H:i');
+            $data['title'] = 'Jadwal Tes - '.Carbon::parse($data['start_at'])->format('d/m/Y H:i');
             $data['status'] = 'published';
         }
         $data['is_partner'] = (bool) ($data['is_partner'] ?? false) || ! empty($data['partner_id']);

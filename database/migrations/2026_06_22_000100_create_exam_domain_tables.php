@@ -70,7 +70,7 @@ return new class extends Migration
 
         Schema::create('schedules', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('question_package_id')->constrained();
+            $table->foreignId('question_package_id')->nullable()->constrained()->nullOnDelete();
             $table->foreignId('partner_id')->nullable()->constrained()->nullOnDelete();
             $table->string('title');
             $table->text('description')->nullable();
@@ -131,6 +131,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained();
             $table->foreignId('schedule_id')->constrained();
+            $table->foreignId('question_package_id')->nullable()->constrained()->nullOnDelete();
             $table->foreignId('payment_id')->nullable()->constrained()->nullOnDelete();
             $table->enum('status', ['pending_payment', 'paid', 'approved', 'cancelled', 'expired']);
             $table->enum('access_status', ['locked', 'unlocked'])->default('locked');

@@ -15,6 +15,8 @@ use Illuminate\Validation\ValidationException;
 
 class ExamAttemptService
 {
+    public function __construct(private QuestionPackageAssignmentService $packageAssignments) {}
+
     public function start(User $user, Schedule $schedule): ExamAttempt
     {
         $registration = ExamRegistration::whereBelongsTo($user)->whereBelongsTo($schedule)->first();
@@ -29,10 +31,8 @@ class ExamAttemptService
         }
 
         return DB::transaction(function () use ($user, $schedule) {
-            $package = $schedule->package()->with([
-                'sections' => fn ($q) => $q->orderBy('order_number'),
-                'questions' => fn ($q) => $q->with('options'),
-            ])->firstOrFail();
+            $registration = ExamRegistration::whereBelongsTo($user)->whereBelongsTo($schedule)->lockForUpdate()->firstOrFail();
+            $package = $this->packageAssignments->assignToRegistration($registration);
             throw_if($package->questions->isEmpty(), ValidationException::withMessages(['package' => 'Paket belum memiliki soal aktif.']));
             $attempt = ExamAttempt::create(['user_id' => $user->id, 'schedule_id' => $schedule->id, 'question_package_id' => $package->id, 'status' => 'in_progress', 'started_at' => now(), 'expires_at' => now()->addMinutes($package->total_duration_minutes)]);
             foreach ($package->sections as $section) {

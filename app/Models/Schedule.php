@@ -18,6 +18,14 @@ class Schedule extends Model
         return $this->belongsTo(QuestionPackage::class, 'question_package_id');
     }
 
+    public function publishedPackages()
+    {
+        return QuestionPackage::query()
+            ->where('status', 'published')
+            ->whereHas('questions')
+            ->orderBy('name');
+    }
+
     public function registrations()
     {
         return $this->hasMany(ExamRegistration::class);
