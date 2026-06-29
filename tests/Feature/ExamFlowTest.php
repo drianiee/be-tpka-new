@@ -133,6 +133,23 @@ class ExamFlowTest extends TestCase
             ->assertForbidden()->assertJsonPath('message', 'Pendaftaran belum ditemukan.');
     }
 
+    public function test_attempt_time_is_anchored_to_schedule_start(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $schedule = $this->createExamFixture($participant);
+
+        $login = $this->postJson('/api/auth/login', ['email' => 'peserta@tpka.com', 'password' => 'password'])
+            ->assertOk();
+        $headers = ['Authorization' => 'Bearer '.$login->json('token')];
+
+        $attempt = $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
+            ->assertSuccessful();
+
+        $this->assertSame($schedule->start_at->toISOString(), $attempt->json('started_at'));
+        $this->assertSame($schedule->start_at->copy()->addMinutes(30)->toISOString(), $attempt->json('expires_at'));
+    }
+
     public function test_participant_my_schedule_marks_unlocked_regular_schedule_as_paid(): void
     {
         $this->seed(DatabaseSeeder::class);
@@ -216,8 +233,8 @@ class ExamFlowTest extends TestCase
             'question_package_id' => $package->id,
             'title' => 'TPA Test Aktif',
             'description' => 'Fixture jadwal untuk test exam player.',
-            'start_at' => now()->subHour(),
-            'end_at' => now()->addDay(),
+            'start_at' => now()->subMinutes(5),
+            'end_at' => now()->addMinutes(25),
             'registration_start_at' => now()->subDay(),
             'registration_end_at' => now()->addHours(12),
             'price' => 0,
@@ -228,6 +245,7 @@ class ExamFlowTest extends TestCase
         ExamRegistration::create([
             'user_id' => $participant->id,
             'schedule_id' => $schedule->id,
+            'question_package_id' => $package->id,
             'status' => 'approved',
             'access_status' => 'unlocked',
             'registered_at' => now(),

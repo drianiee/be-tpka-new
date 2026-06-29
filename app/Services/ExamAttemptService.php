@@ -33,8 +33,19 @@ class ExamAttemptService
         return DB::transaction(function () use ($user, $schedule) {
             $registration = ExamRegistration::whereBelongsTo($user)->whereBelongsTo($schedule)->lockForUpdate()->firstOrFail();
             $package = $this->packageAssignments->assignToRegistration($registration);
+            $attemptStartedAt = $schedule->start_at->copy();
+            $attemptExpiresAt = $attemptStartedAt->copy()->addMinutes((int) $package->total_duration_minutes);
+            if ($schedule->end_at->lt($attemptExpiresAt)) {
+                $attemptExpiresAt = $schedule->end_at->copy();
+            }
+
+            throw_if(
+                now()->greaterThanOrEqualTo($attemptExpiresAt),
+                ValidationException::withMessages(['schedule' => 'Waktu ujian untuk paket ini sudah habis.'])
+            );
+
             throw_if($package->questions->isEmpty(), ValidationException::withMessages(['package' => 'Paket belum memiliki soal aktif.']));
-            $attempt = ExamAttempt::create(['user_id' => $user->id, 'schedule_id' => $schedule->id, 'question_package_id' => $package->id, 'status' => 'in_progress', 'started_at' => now(), 'expires_at' => now()->addMinutes($package->total_duration_minutes)]);
+            $attempt = ExamAttempt::create(['user_id' => $user->id, 'schedule_id' => $schedule->id, 'question_package_id' => $package->id, 'status' => 'in_progress', 'started_at' => $attemptStartedAt, 'expires_at' => $attemptExpiresAt]);
             foreach ($package->sections as $section) {
                 $sectionQuestions = $package->questions->where('exam_section_id', $section->id)->shuffle()->values();
                 foreach ($sectionQuestions as $index => $question) {
