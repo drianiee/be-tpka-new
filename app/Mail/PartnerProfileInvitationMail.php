@@ -15,7 +15,7 @@ class PartnerProfileInvitationMail extends Mailable
 
     public function build(): self
     {
-        return $this->subject('Konfirmasi Peserta Mitra TPKA')
+        return $this->subject('Konfirmasi Peserta Ujian TPKA')
             ->view('emails.partner.profile-invitation');
     }
 }

@@ -23,20 +23,60 @@ class ExamAttemptService
         abort_unless($registration, 403, 'Pendaftaran belum ditemukan.');
         abort_if($registration->access_status !== 'unlocked', 403, 'Pembayaran belum selesai.');
         abort_unless(in_array($registration->status, ['paid', 'approved'], true), 403, 'Pendaftaran belum memiliki akses ujian.');
-        throw_unless($schedule->status === 'published' && now()->between($schedule->start_at, $schedule->end_at), ValidationException::withMessages(['schedule' => 'Jadwal ujian belum aktif atau sudah berakhir.']));
+        $retakePending = $this->hasPendingRetake($registration);
+        throw_unless(
+            $schedule->status === 'published' && ($retakePending || now()->between($schedule->start_at, $schedule->end_at)),
+            ValidationException::withMessages(['schedule' => 'Jadwal ujian belum aktif atau sudah berakhir.'])
+        );
 
-        $existing = ExamAttempt::where('user_id', $user->id)->where('schedule_id', $schedule->id)->where('status', 'in_progress')->first();
-        if ($existing) {
+        $existing = ExamAttempt::where('user_id', $user->id)
+            ->where('schedule_id', $schedule->id)
+            ->where('status', 'in_progress')
+            ->latest('id')
+            ->first();
+        if ($existing && ! $retakePending) {
             return $existing;
         }
+
+        $latestCompleted = ExamAttempt::where('user_id', $user->id)
+            ->where('schedule_id', $schedule->id)
+            ->whereIn('status', ['submitted', 'expired'])
+            ->latest('id')
+            ->first();
+        throw_if(
+            $latestCompleted && ! $retakePending,
+            ValidationException::withMessages([
+                'attempt' => 'Ujian ini sudah berakhir. Silakan hubungi admin jika membutuhkan ujian ulang.',
+            ])
+        );
 
         return DB::transaction(function () use ($user, $schedule) {
             $registration = ExamRegistration::whereBelongsTo($user)->whereBelongsTo($schedule)->lockForUpdate()->firstOrFail();
             $package = $this->packageAssignments->assignToRegistration($registration);
-            $attemptStartedAt = $schedule->start_at->copy();
-            $attemptExpiresAt = $attemptStartedAt->copy()->addMinutes((int) $package->total_duration_minutes);
-            if ($schedule->end_at->lt($attemptExpiresAt)) {
-                $attemptExpiresAt = $schedule->end_at->copy();
+            $retakePending = $this->hasPendingRetake($registration);
+
+            $latestCompleted = ExamAttempt::where('user_id', $user->id)
+                ->where('schedule_id', $schedule->id)
+                ->whereIn('status', ['submitted', 'expired'])
+                ->lockForUpdate()
+                ->latest('id')
+                ->first();
+            throw_if(
+                $latestCompleted && ! $retakePending,
+                ValidationException::withMessages([
+                    'attempt' => 'Ujian ini sudah berakhir. Silakan hubungi admin jika membutuhkan ujian ulang.',
+                ])
+            );
+
+            if ($retakePending) {
+                $attemptStartedAt = now();
+                $attemptExpiresAt = now()->copy()->addMinutes((int) $package->total_duration_minutes);
+            } else {
+                $attemptStartedAt = $schedule->start_at->copy();
+                $attemptExpiresAt = $attemptStartedAt->copy()->addMinutes((int) $package->total_duration_minutes);
+                if ($schedule->end_at->lt($attemptExpiresAt)) {
+                    $attemptExpiresAt = $schedule->end_at->copy();
+                }
             }
 
             throw_if(
@@ -45,7 +85,18 @@ class ExamAttemptService
             );
 
             throw_if($package->questions->isEmpty(), ValidationException::withMessages(['package' => 'Paket belum memiliki soal aktif.']));
-            $attempt = ExamAttempt::create(['user_id' => $user->id, 'schedule_id' => $schedule->id, 'question_package_id' => $package->id, 'status' => 'in_progress', 'started_at' => $attemptStartedAt, 'expires_at' => $attemptExpiresAt]);
+            $attempt = ExamAttempt::create([
+                'user_id' => $user->id,
+                'schedule_id' => $schedule->id,
+                'question_package_id' => $package->id,
+                'status' => 'in_progress',
+                'started_at' => $attemptStartedAt,
+                'expires_at' => $attemptExpiresAt,
+                'metadata' => [
+                    'mode' => $retakePending ? 'retake' : 'scheduled',
+                    'proctoring' => 'strict',
+                ],
+            ]);
             foreach ($package->sections as $section) {
                 $sectionQuestions = $package->questions->where('exam_section_id', $section->id)->shuffle()->values();
                 foreach ($sectionQuestions as $index => $question) {
@@ -56,7 +107,11 @@ class ExamAttemptService
                     ]);
                 }
             }
-            AttemptEvent::create(['exam_attempt_id' => $attempt->id, 'type' => 'started']);
+            if ($retakePending) {
+                $registration->forceFill(['retake_consumed_at' => now()])->save();
+            }
+
+            AttemptEvent::create(['exam_attempt_id' => $attempt->id, 'type' => 'started', 'payload' => ['retake' => $retakePending]]);
 
             return $attempt;
         });
@@ -90,6 +145,84 @@ class ExamAttemptService
             AttemptEvent::create(['exam_attempt_id' => $locked->id, 'type' => 'submitted', 'payload' => ['expired' => $expired]]);
 
             return $locked->fresh('scores');
+        });
+    }
+
+    public function terminateForViolation(ExamAttempt $attempt, string $reason, array $context = []): ExamAttempt
+    {
+        return DB::transaction(function () use ($attempt, $reason, $context) {
+            $locked = ExamAttempt::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+            if (in_array($locked->status, ['submitted', 'expired'], true)) {
+                return $locked->fresh('scores');
+            }
+
+            $scores = $this->scoreAttempt($locked);
+            $metadata = array_merge($locked->metadata ?? [], [
+                'termination_reason' => 'violation',
+                'violation_reason' => $reason,
+                'violated_at' => now()->toISOString(),
+                'violation_context' => $context,
+            ]);
+
+            $locked->update([
+                'status' => 'submitted',
+                'submitted_at' => now(),
+                'score_total' => $scores['score_total'],
+                'score_breakdown' => $scores['score_breakdown'],
+                'metadata' => $metadata,
+            ]);
+
+            AttemptEvent::create([
+                'exam_attempt_id' => $locked->id,
+                'type' => 'proctoring_violation',
+                'payload' => [
+                    'reason' => $reason,
+                    'context' => $context,
+                ],
+            ]);
+
+            return $locked->fresh('scores');
+        });
+    }
+
+    public function grantRetake(ExamRegistration $registration, ?User $actor = null): ExamRegistration
+    {
+        return DB::transaction(function () use ($registration, $actor) {
+            $lockedRegistration = ExamRegistration::whereKey($registration->id)->lockForUpdate()->firstOrFail();
+            $grantTime = now();
+
+            ExamAttempt::where('user_id', $lockedRegistration->user_id)
+                ->where('schedule_id', $lockedRegistration->schedule_id)
+                ->where('status', 'in_progress')
+                ->lockForUpdate()
+                ->get()
+                ->each(function (ExamAttempt $attempt) use ($grantTime, $actor) {
+                    $attempt->update([
+                        'status' => 'cancelled',
+                        'submitted_at' => $grantTime,
+                        'metadata' => array_merge($attempt->metadata ?? [], [
+                            'termination_reason' => 'retake_reset',
+                            'retake_granted_at' => $grantTime->toISOString(),
+                            'retake_granted_by' => $actor?->id,
+                        ]),
+                    ]);
+
+                    AttemptEvent::create([
+                        'exam_attempt_id' => $attempt->id,
+                        'type' => 'retake_granted',
+                        'payload' => [
+                            'granted_by' => $actor?->id,
+                            'granted_at' => $grantTime->toISOString(),
+                        ],
+                    ]);
+                });
+
+            $lockedRegistration->forceFill([
+                'retake_granted_at' => $grantTime,
+                'retake_consumed_at' => null,
+            ])->save();
+
+            return $lockedRegistration->fresh();
         });
     }
 
@@ -186,5 +319,14 @@ class ExamAttemptService
             'score_total' => (float) ($baseScore + ($totalCorrect * $correctAnswerScore)),
             'score_breakdown' => $breakdown,
         ];
+    }
+
+    public function hasPendingRetake(ExamRegistration $registration): bool
+    {
+        if (! $registration->retake_granted_at) {
+            return false;
+        }
+
+        return ! $registration->retake_consumed_at || $registration->retake_consumed_at->lt($registration->retake_granted_at);
     }
 }

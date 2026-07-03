@@ -63,21 +63,39 @@ class ScheduleController extends Controller
 
     public function addParticipant(Request $request, Schedule $schedule)
     {
-        $data = $request->validate(['user_id' => ['required', 'exists:users,id']]);
-        $registration = ExamRegistration::firstOrNew(['user_id' => $data['user_id'], 'schedule_id' => $schedule->id]);
-        $registration->fill([
-            'payment_id' => null,
-            'status' => 'approved',
-            'access_status' => 'unlocked',
-            'registration_source' => $schedule->partner_id || $schedule->is_partner ? 'partner' : 'admin',
-            'registered_at' => now(),
+        $data = $request->validate([
+            'user_id' => ['nullable', 'exists:users,id'],
+            'email' => ['required', 'email'],
+            'name' => ['nullable', 'string', 'max:255'],
         ]);
-        if (! $registration->question_package_id) {
-            $registration->question_package_id = $this->packageAssignments->pickRandomPackage($schedule)->id;
-        }
-        $registration->save();
 
-        return ['message' => 'Peserta ditambahkan.', 'schedule' => $this->legacy($schedule->fresh(['package', 'registrations']))];
+        $result = app(PartnerInvitationService::class)->registerManualParticipant($schedule, $request->user(), [
+            'user_id' => $data['user_id'] ?? null,
+            'email' => $data['email'],
+            'name' => $data['name'] ?? '',
+            'registration_source' => $schedule->partner_id || $schedule->is_partner ? 'partner' : 'admin',
+        ]);
+
+        return [
+            'message' => 'Peserta ditambahkan.',
+            'participant' => [
+                'id' => $result['user']->id,
+                'name' => $result['user']->name,
+                'email' => $result['user']->email,
+                'created_user' => $result['created_user'],
+                'sent_invitation' => $result['sent_invitation'],
+                'sent_confirmation' => $result['sent_confirmation'],
+            ],
+            'schedule' => $this->legacy($schedule->fresh([
+                'package.sections',
+                'partner',
+                'registrations.user',
+                'registrations.package',
+                'registrations.payment',
+                'registrations.payments',
+                'attempts.scores',
+            ])),
+        ];
     }
 
     public function removeParticipant(Schedule $schedule, int $userId)
@@ -85,6 +103,31 @@ class ScheduleController extends Controller
         ExamRegistration::where('schedule_id', $schedule->id)->where('user_id', $userId)->delete();
 
         return ['message' => 'Peserta dihapus.'];
+    }
+
+    public function grantRetake(Request $request, Schedule $schedule, int $userId)
+    {
+        $registration = ExamRegistration::where('schedule_id', $schedule->id)
+            ->where('user_id', $userId)
+            ->firstOrFail();
+
+        abort_if($registration->access_status !== 'unlocked', 422, 'Peserta belum memiliki akses ujian.');
+        abort_unless(in_array($registration->status, ['paid', 'approved'], true), 422, 'Peserta belum siap mengikuti ujian.');
+
+        $this->examAttemptService->grantRetake($registration, $request->user());
+
+        return [
+            'message' => 'Peserta diizinkan mengulang ujian.',
+            'schedule' => $this->legacy($schedule->fresh([
+                'package.sections',
+                'partner',
+                'registrations.user',
+                'registrations.package',
+                'registrations.payment',
+                'registrations.payments',
+                'attempts.scores',
+            ])),
+        ];
     }
 
     public function importPartnerParticipants(Request $request, Schedule $schedule, PartnerInvitationService $invitations)
@@ -126,7 +169,7 @@ class ScheduleController extends Controller
         return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $availablePackages->map(fn ($package) => ['id' => $package->id, 'name' => $package->name, 'status' => $package->status, 'total_questions' => $package->total_questions, 'total_duration_minutes' => $package->total_duration_minutes])->values(), 'attempt_count' => $attempts->count(), 'submitted_count' => $attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(function ($r) use ($attempts, $isPartnerSchedule) {
             $attempt = $attempts->where('user_id', $r->user_id)->sortByDesc('id')->first();
             $payment = $this->resolvedRegistrationPayment($r);
-            $statusMeta = $this->registrationStatusMeta($r, $isPartnerSchedule, $payment);
+            $statusMeta = $this->participantStatusMeta($r, $attempt, $isPartnerSchedule, $payment);
             $package = $r->package;
 
             return [
@@ -134,6 +177,8 @@ class ScheduleController extends Controller
                 'name' => $r->user?->name,
                 'email' => $r->user?->email,
                 'status' => $r->status,
+                'attempt_id' => $attempt?->id,
+                'attempt_status' => $attempt?->status,
                 'status_label' => $statusMeta['label'],
                 'status_variant' => $statusMeta['variant'],
                 'email_verified_at' => $r->user?->email_verified_at?->toISOString(),
@@ -166,8 +211,21 @@ class ScheduleController extends Controller
         return $registration->relationLoaded('payment') ? $registration->payment : $registration->payment()->first();
     }
 
-    private function registrationStatusMeta(ExamRegistration $registration, bool $isPartnerSchedule, ?Payment $payment): array
+    private function participantStatusMeta(ExamRegistration $registration, ?ExamAttempt $attempt, bool $isPartnerSchedule, ?Payment $payment): array
     {
+        $terminationReason = strtolower((string) ($attempt?->metadata['termination_reason'] ?? ''));
+        if ($attempt?->status === 'in_progress') {
+            return ['label' => 'Sedang melaksanakan ujian', 'variant' => 'warning'];
+        }
+
+        if ($terminationReason === 'violation') {
+            return ['label' => 'Selesai dengan pelanggaran', 'variant' => 'warning'];
+        }
+
+        if ($attempt && in_array($attempt->status, ['submitted', 'expired'], true)) {
+            return ['label' => 'Selesai', 'variant' => 'success'];
+        }
+
         if ($isPartnerSchedule) {
             return $registration->user?->email_verified_at
                 ? ['label' => 'Telah konfirmasi email', 'variant' => 'success']
@@ -382,7 +440,7 @@ XML;
             'package' => 'Buat minimal satu paket soal published sebelum membuat jadwal.',
         ]));
 
-        $data['question_package_id'] = $package->id;
+        $data['question_package_id'] = ! empty($data['question_package_id']) ? $package->id : null;
         if (empty($data['end_at'])) {
             $data['end_at'] = Carbon::parse($data['start_at'])->addMinutes((int) $package->total_duration_minutes);
         }

@@ -14,6 +14,7 @@ use App\Models\Schedule;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 class ExamFlowTest extends TestCase
@@ -181,6 +182,170 @@ class ExamFlowTest extends TestCase
             ->assertOk()
             ->assertJsonPath('participant_status_label', 'Telah melakukan pembayaran')
             ->assertJsonPath('payment_status', 'paid');
+    }
+
+    public function test_attempt_is_submitted_with_violation_status(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $schedule = $this->createExamFixture($participant);
+
+        $login = $this->postJson('/api/auth/login', ['email' => 'peserta@tpka.com', 'password' => 'password'])
+            ->assertOk();
+        $headers = ['Authorization' => 'Bearer '.$login->json('token')];
+
+        $attemptId = $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
+            ->assertSuccessful()
+            ->json('id');
+
+        $this->postJson("/api/participant/attempts/{$attemptId}/violation", [
+            'reason' => 'tab_hidden',
+            'context' => ['event' => 'visibilitychange'],
+        ], $headers)
+            ->assertOk()
+            ->assertJsonPath('status', 'submitted');
+
+        $this->assertDatabaseHas('exam_attempts', [
+            'id' => $attemptId,
+            'status' => 'submitted',
+        ]);
+
+        $this->assertSame(
+            'violation',
+            ExamAttempt::findOrFail($attemptId)->metadata['termination_reason'] ?? null
+        );
+
+        $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
+            ->assertStatus(422)
+            ->assertJsonPath('errors.attempt.0', 'Ujian ini sudah berakhir. Silakan hubungi admin jika membutuhkan ujian ulang.');
+    }
+
+    public function test_admin_can_grant_retake_and_participant_gets_fresh_timer(): void
+    {
+        try {
+            Carbon::setTestNow('2026-06-29 08:10:00');
+            $this->seed(DatabaseSeeder::class);
+            $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+            $admin = User::where('role', 'administrator')->firstOrFail();
+            $schedule = $this->createExamFixture($participant);
+
+            $firstAttemptId = $this->actingAs($participant, 'sanctum')
+                ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
+                ->assertSuccessful()
+                ->json('id');
+
+            $this->actingAs($admin, 'sanctum')
+                ->postJson("/api/schedules/{$schedule->id}/participants/{$participant->id}/retake")
+                ->assertOk()
+                ->assertJsonPath('message', 'Peserta diizinkan mengulang ujian.');
+
+            Carbon::setTestNow('2026-06-29 11:45:00');
+
+            $retake = $this->actingAs($participant, 'sanctum')
+                ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
+                ->assertSuccessful();
+
+            $retakeAttemptId = $retake->json('id');
+
+            $this->assertNotSame($firstAttemptId, $retakeAttemptId);
+            $this->assertSame(now()->toISOString(), $retake->json('started_at'));
+            $this->assertSame(now()->copy()->addMinutes(30)->toISOString(), $retake->json('expires_at'));
+            $this->assertSame('retake', ExamAttempt::findOrFail($retakeAttemptId)->metadata['mode'] ?? null);
+            $this->assertDatabaseHas('exam_registrations', [
+                'user_id' => $participant->id,
+                'schedule_id' => $schedule->id,
+            ]);
+            $this->assertSame(
+                'cancelled',
+                ExamAttempt::findOrFail($firstAttemptId)->status
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_participant_can_start_retake_after_original_schedule_end(): void
+    {
+        try {
+            Carbon::setTestNow('2026-06-29 08:05:00');
+            $this->seed(DatabaseSeeder::class);
+            $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+            $admin = User::where('role', 'administrator')->firstOrFail();
+            $schedule = $this->createExamFixture($participant);
+
+            $this->actingAs($participant, 'sanctum')
+                ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
+                ->assertSuccessful();
+
+            Carbon::setTestNow('2026-06-29 09:45:00');
+
+            $this->actingAs($admin, 'sanctum')
+                ->postJson("/api/schedules/{$schedule->id}/participants/{$participant->id}/retake")
+                ->assertOk();
+
+            $detail = $this->actingAs($participant, 'sanctum')
+                ->getJson("/api/participant/my-schedules/{$schedule->id}")
+                ->assertOk()
+                ->assertJsonPath('can_start', true);
+
+            $retake = $this->actingAs($participant, 'sanctum')
+                ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
+                ->assertSuccessful()
+                ->assertJsonPath('status', 'in_progress');
+
+            $this->assertSame(now()->toISOString(), $retake->json('started_at'));
+            $this->assertSame(now()->copy()->addMinutes(30)->toISOString(), $retake->json('expires_at'));
+            $this->assertSame($detail->json('attempt_id'), null);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_participant_scores_only_show_latest_completed_attempt_per_schedule(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $admin = User::where('role', 'administrator')->firstOrFail();
+        $schedule = $this->createExamFixture($participant);
+
+        $login = $this->postJson('/api/auth/login', ['email' => 'peserta@tpka.com', 'password' => 'password'])
+            ->assertOk();
+        $headers = ['Authorization' => 'Bearer '.$login->json('token')];
+
+        $firstAttemptId = $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
+            ->assertSuccessful()
+            ->json('id');
+
+        $this->postJson("/api/participant/attempts/{$firstAttemptId}/violation", [
+            'reason' => 'window_blur',
+            'context' => ['event' => 'blur'],
+        ], $headers)->assertOk();
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/schedules/{$schedule->id}/participants/{$participant->id}/retake")
+            ->assertOk();
+
+        $this->actingAs($participant, 'sanctum');
+        $secondAttempt = $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
+            ->assertSuccessful();
+        $secondAttemptId = $secondAttempt->json('id');
+        $questionId = $secondAttempt->json('questions.0.id');
+        $correctOptionId = QuestionOption::where('question_id', $questionId)
+            ->where('is_correct', true)
+            ->value('id');
+
+        $this->putJson("/api/participant/attempts/{$secondAttemptId}/answers/{$questionId}", [
+            'question_option_id' => $correctOptionId,
+        ], $headers)->assertOk();
+
+        $this->postJson("/api/participant/attempts/{$secondAttemptId}/submit", [], $headers)
+            ->assertOk();
+
+        $scores = $this->getJson('/api/participant/scores', $headers)
+            ->assertOk();
+
+        $this->assertCount(1, $scores->json('data'));
+        $this->assertSame($secondAttemptId, $scores->json('data.0.id'));
     }
 
     private function createExamFixture(User $participant): Schedule

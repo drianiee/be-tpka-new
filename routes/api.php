@@ -58,6 +58,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('schedules', ScheduleController::class);
         Route::post('schedules/{schedule}/participants', [ScheduleController::class, 'addParticipant']);
         Route::delete('schedules/{schedule}/participants/{userId}', [ScheduleController::class, 'removeParticipant']);
+        Route::post('schedules/{schedule}/participants/{userId}/retake', [ScheduleController::class, 'grantRetake']);
         Route::get('schedules/{schedule}/participants/export', fn () => ['message' => 'Export belum diaktifkan.', 'download_url' => null]);
         Route::get('schedules/{schedule}/partner/import-template', [ScheduleController::class, 'partnerImportTemplate']);
         Route::post('schedules/{schedule}/partner/import', [ScheduleController::class, 'importPartnerParticipants']);
@@ -73,20 +74,58 @@ Route::middleware('auth:sanctum')->group(function () {
                 'contact_email' => 'nullable|email',
                 'contact_phone' => 'nullable|string',
             ]);
-            $next = 1;
-            do {
-                $code = sprintf('MTR-%04d', $next++);
-            } while (Partner::where('code', $code)->exists());
-
             $p = Partner::create([
                 ...$data,
-                'code' => $code,
                 'is_active' => true,
             ]);
 
             return response()->json(['message' => 'Mitra dibuat.', 'partner' => $p], 201);
         });
-        Route::get('partners/{partner}', fn (Partner $partner) => ['partner' => $partner, 'schedules' => ['current_page' => 1, 'data' => [], 'last_page' => 1, 'per_page' => 20, 'total' => 0]]);
+        Route::get('partners/{partner}', function (Request $request, Partner $partner) {
+            $perPage = $request->integer('per_page', 20);
+            $paginator = Schedule::query()
+                ->where('partner_id', $partner->id)
+                ->with(['partner', 'registrations'])
+                ->withCount('registrations')
+                ->latest('start_at')
+                ->paginate($perPage);
+
+            $scheduleStatus = static function (Schedule $schedule): string {
+                if (now()->lt($schedule->start_at)) {
+                    return 'belum-dimulai';
+                }
+                if (now()->gte($schedule->end_at)) {
+                    return 'telah-selesai';
+                }
+
+                return 'sedang-berlangsung';
+            };
+
+            return [
+                'partner' => [
+                    ...$partner->toArray(),
+                    'schedules_count' => $partner->schedules()->count(),
+                ],
+                'schedules' => $paginator->through(function (Schedule $schedule) use ($scheduleStatus) {
+                    return [
+                        'id' => $schedule->id,
+                        'date' => $schedule->start_at->format('d M Y'),
+                        'start_time' => $schedule->start_at->format('H:i:s'),
+                        'end_time' => $schedule->end_at->format('H:i:s'),
+                        'capacity' => $schedule->quota,
+                        'is_partner' => (bool) ($schedule->is_partner || $schedule->partner_id),
+                        'partner_id' => $schedule->partner_id,
+                        'price' => (string) $schedule->price,
+                        'attempt_count' => $schedule->attempts()->count(),
+                        'submitted_count' => $schedule->attempts()->whereIn('status', ['submitted', 'expired'])->count(),
+                        'created_at' => $schedule->created_at?->toISOString(),
+                        'updated_at' => $schedule->updated_at?->toISOString(),
+                        'current_participants' => $schedule->registrations_count,
+                        'status' => $scheduleStatus($schedule),
+                    ];
+                }),
+            ];
+        });
 
         Route::get('payments', [PaymentController::class, 'index']);
         Route::get('payments/{payment}', [PaymentController::class, 'show']);
@@ -140,6 +179,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('attempts/{attempt}/answers/{questionId}', [ExamAttemptController::class, 'answer']);
         Route::post('attempts/{attempt}/answers/batch', [ExamAttemptController::class, 'batch']);
         Route::post('attempts/{attempt}/heartbeat', [ExamAttemptController::class, 'heartbeat']);
+        Route::post('attempts/{attempt}/violation', [ExamAttemptController::class, 'violation']);
         Route::post('attempts/{attempt}/submit', [ExamAttemptController::class, 'submit']);
         Route::get('attempts/{attempt}/result', [ExamAttemptController::class, 'result']);
         Route::get('scores', [ParticipantController::class, 'scores']);

@@ -224,7 +224,7 @@ class MidtransPaymentTest extends TestCase
     {
         $this->seed(DatabaseSeeder::class);
         $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
-        $package = $this->createPackage('Paket Acak A');
+        $this->createPackage('Paket Acak A');
 
         $this->actingAs($admin, 'sanctum')
             ->postJson('/api/schedules', [
@@ -236,7 +236,21 @@ class MidtransPaymentTest extends TestCase
                 'is_partner' => false,
             ])
             ->assertCreated()
-            ->assertJsonPath('data.question_package_id', $package->id);
+            ->assertJsonPath('data.question_package_id', null);
+    }
+
+    public function test_schedule_detail_exposes_all_published_packages_for_random_assignment(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(150000);
+        $secondPackage = $this->createPackage('Paket Acak B');
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson("/api/schedules/{$schedule->id}")
+            ->assertOk()
+            ->assertJsonCount(2, 'packages')
+            ->assertJsonFragment(['id' => $secondPackage->id, 'name' => $secondPackage->name]);
     }
 
     public function test_attempt_uses_package_assigned_to_registration(): void

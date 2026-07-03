@@ -65,6 +65,21 @@ class ExamAttemptController extends Controller
         return $this->resultData($this->service->submit($attempt));
     }
 
+    public function violation(Request $request, ExamAttempt $attempt)
+    {
+        $this->owner($request, $attempt);
+        $data = $request->validate([
+            'reason' => ['required', 'string', 'max:100'],
+            'context' => ['nullable', 'array'],
+        ]);
+
+        return $this->resultData($this->service->terminateForViolation(
+            $attempt,
+            $data['reason'],
+            $data['context'] ?? []
+        ));
+    }
+
     public function result(Request $request, ExamAttempt $attempt)
     {
         $this->owner($request, $attempt);

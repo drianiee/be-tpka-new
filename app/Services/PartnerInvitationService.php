@@ -20,6 +20,86 @@ class PartnerInvitationService
 {
     public function __construct(private QuestionPackageAssignmentService $packageAssignments) {}
 
+    public function registerManualParticipant(Schedule $schedule, User $actor, array $payload): array
+    {
+        $email = strtolower(trim((string) ($payload['email'] ?? '')));
+        $name = trim((string) ($payload['name'] ?? ''));
+        $userId = isset($payload['user_id']) ? (int) $payload['user_id'] : null;
+
+        throw_if(
+            $email === '' || ! filter_var($email, FILTER_VALIDATE_EMAIL),
+            ValidationException::withMessages(['email' => 'Email peserta tidak valid.'])
+        );
+
+        $user = $userId ? User::whereKey($userId)->where('role', 'peserta')->first() : null;
+        if ($user && strtolower((string) $user->email) !== $email) {
+            throw ValidationException::withMessages(['email' => 'Email tidak cocok dengan peserta yang dipilih.']);
+        }
+
+        if (! $user) {
+            $user = User::where('email', $email)->where('role', 'peserta')->first();
+        }
+
+        $createdUser = false;
+        if (! $user) {
+            throw_if(
+                $name === '',
+                ValidationException::withMessages(['name' => 'Nama peserta wajib diisi untuk email baru.'])
+            );
+
+            $user = User::create([
+                'name' => $name,
+                'email' => $email,
+                'password' => Hash::make(Str::random(48)),
+                'role' => 'peserta',
+                'is_active' => true,
+            ]);
+            $createdUser = true;
+        }
+
+        $registrationSource = (string) ($payload['registration_source'] ?? ($schedule->partner_id || $schedule->is_partner ? 'partner' : 'admin'));
+
+        $registration = ExamRegistration::firstOrNew([
+            'user_id' => $user->id,
+            'schedule_id' => $schedule->id,
+        ]);
+        $registration->fill([
+            'payment_id' => null,
+            'status' => 'approved',
+            'access_status' => 'unlocked',
+            'registration_source' => $registrationSource,
+            'registered_at' => now(),
+        ]);
+        if (! $registration->question_package_id) {
+            $registration->question_package_id = $this->packageAssignments->pickRandomPackage($schedule)->id;
+        }
+        $registration->save();
+
+        $sentInvitation = false;
+        $sentConfirmation = false;
+        if (! $user->profile_completed_at) {
+            $token = $this->createInvitation($schedule, $user, $actor, [
+                'name' => $name !== '' ? $name : $user->name,
+                'email' => $email,
+                'phone' => $payload['phone'] ?? null,
+                'identity_number' => $payload['identity_number'] ?? null,
+            ]);
+            Mail::to($email)->send(new PartnerProfileInvitationMail($user->name, $schedule, $this->onboardingUrl($token)));
+            $sentInvitation = true;
+        } else {
+            Mail::to($email)->send(new PartnerScheduleConfirmationMail($user, $schedule, $this->scheduleUrl($schedule)));
+            $sentConfirmation = true;
+        }
+
+        return [
+            'user' => $user->fresh(),
+            'registration' => $registration->fresh(),
+            'created_user' => $createdUser,
+            'sent_invitation' => $sentInvitation,
+            'sent_confirmation' => $sentConfirmation,
+        ];
+    }
+
     public function import(Schedule $schedule, UploadedFile $file, User $actor): array
     {
         abort_unless($schedule->is_partner || $schedule->partner_id, 422, 'Jadwal ini bukan jadwal mitra.');
@@ -41,43 +121,21 @@ class PartnerInvitationService
                     continue;
                 }
 
-                $user = User::where('email', $email)->first();
-                if (! $user) {
-                    $user = User::create([
-                        'name' => $name,
-                        'email' => $email,
-                        'password' => Hash::make(Str::random(48)),
-                        'role' => 'peserta',
-                        'is_active' => true,
-                        'phone' => filled($row['phone'] ?? null) ? $row['phone'] : null,
-                        'identity_number' => filled($row['identity_number'] ?? null) ? $row['identity_number'] : null,
-                    ]);
+                $result = $this->registerManualParticipant($schedule, $actor, [
+                    'email' => $email,
+                    'name' => $name,
+                    'phone' => $row['phone'] ?? null,
+                    'identity_number' => $row['identity_number'] ?? null,
+                    'registration_source' => 'import',
+                ]);
+                $summary['attached_to_schedule']++;
+                if ($result['created_user']) {
                     $summary['created_users']++;
                 }
-
-                $registration = ExamRegistration::firstOrNew([
-                    'user_id' => $user->id,
-                    'schedule_id' => $schedule->id,
-                ]);
-                $registration->fill([
-                    'payment_id' => null,
-                    'status' => 'approved',
-                    'access_status' => 'unlocked',
-                    'registration_source' => 'import',
-                    'registered_at' => now(),
-                ]);
-                if (! $registration->question_package_id) {
-                    $registration->question_package_id = $this->packageAssignments->pickRandomPackage($schedule)->id;
-                }
-                $registration->save();
-                $summary['attached_to_schedule']++;
-
-                if (! $user->profile_completed_at) {
-                    $token = $this->createInvitation($schedule, $user, $actor, $row);
-                    Mail::to($email)->send(new PartnerProfileInvitationMail($user->name, $schedule, $this->onboardingUrl($token)));
+                if ($result['sent_invitation']) {
                     $summary['sent_invitations']++;
-                } else {
-                    Mail::to($email)->send(new PartnerScheduleConfirmationMail($user, $schedule, $this->scheduleUrl($schedule)));
+                }
+                if ($result['sent_confirmation']) {
                     $summary['sent_confirmations']++;
                 }
             }

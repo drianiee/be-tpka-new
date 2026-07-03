@@ -33,10 +33,6 @@ class QuestionPackageAssignmentService
             ->where('status', 'published')
             ->whereHas('questions');
 
-        if ($schedule?->question_package_id) {
-            $query->whereKey($schedule->question_package_id);
-        }
-
         $package = $query->inRandomOrder()->first();
 
         throw_if(
@@ -51,15 +47,10 @@ class QuestionPackageAssignmentService
 
     public function availablePackages(?Schedule $schedule = null)
     {
-        $query = QuestionPackage::query()
+        return QuestionPackage::query()
             ->where('status', 'published')
             ->whereHas('questions')
-            ->orderBy('name');
-
-        if ($schedule?->question_package_id) {
-            $query->whereKey($schedule->question_package_id);
-        }
-
-        return $query->get(['id', 'name', 'status', 'total_questions', 'total_duration_minutes']);
+            ->orderBy('name')
+            ->get(['id', 'name', 'status', 'total_questions', 'total_duration_minutes']);
     }
 }

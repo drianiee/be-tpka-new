@@ -6,11 +6,11 @@ use Illuminate\Database\Eloquent\Model;
 
 class ExamRegistration extends Model
 {
-    protected $fillable = ['user_id', 'schedule_id', 'question_package_id', 'payment_id', 'status', 'access_status', 'registration_source', 'registered_at'];
+    protected $fillable = ['user_id', 'schedule_id', 'question_package_id', 'payment_id', 'status', 'access_status', 'registration_source', 'registered_at', 'retake_granted_at', 'retake_consumed_at'];
 
     protected function casts(): array
     {
-        return ['registered_at' => 'datetime'];
+        return ['registered_at' => 'datetime', 'retake_granted_at' => 'datetime', 'retake_consumed_at' => 'datetime'];
     }
 
     public function schedule()

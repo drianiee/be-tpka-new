@@ -137,6 +137,8 @@ return new class extends Migration
             $table->enum('access_status', ['locked', 'unlocked'])->default('locked');
             $table->enum('registration_source', ['self', 'admin', 'partner', 'import'])->default('self');
             $table->timestamp('registered_at');
+            $table->timestamp('retake_granted_at')->nullable();
+            $table->timestamp('retake_consumed_at')->nullable();
             $table->timestamps();
             $table->unique(['user_id', 'schedule_id']);
         });

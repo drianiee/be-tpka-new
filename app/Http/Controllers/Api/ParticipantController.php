@@ -134,8 +134,10 @@ class ParticipantController extends Controller
         $attempts = ExamAttempt::where('user_id', $request->user()->id)
             ->whereIn('status', ['submitted', 'expired'])
             ->with(['schedule', 'scores', 'package.sections'])
-            ->latest()
+            ->latest('id')
             ->get()
+            ->unique('schedule_id')
+            ->values()
             ->map(fn (ExamAttempt $attempt) => $this->examAttemptService->recalculateCompletedAttempt($attempt)->loadMissing(['schedule', 'scores', 'package.sections']));
 
         return ['status' => $request->get('status', 'all'), 'count' => $attempts->count(), 'data' => $attempts->map(fn ($a) => $this->scoreData($a))];
@@ -159,10 +161,17 @@ class ParticipantController extends Controller
         $payment = $this->resolvedPayment($r);
         $isPartnerSchedule = (bool) ($s->is_partner || $s->partner_id);
         $participantStatus = $this->participantStatusPayload($r, $isPartnerSchedule, $payment);
+        $retakePending = $this->examAttemptService->hasPendingRetake($r);
         $assignedPackage = $r->relationLoaded('package') ? $r->package : $r->package()->first();
         $displayPackage = $assignedPackage ?: $s->package;
+        $activeAttempt = $attempt && $attempt->status === 'in_progress' ? $attempt : null;
+        $completedAttempt = $attempt && in_array($attempt->status, ['submitted', 'expired'], true);
+        $canStart = $r->access_status === 'unlocked'
+            && $s->status === 'published'
+            && (! $completedAttempt || $retakePending)
+            && ($retakePending || now()->between($s->start_at, $s->end_at));
 
-        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $r->access_status === 'unlocked' && $s->status === 'published' && now()->between($s->start_at, $s->end_at), 'has_attempt' => (bool) $attempt, 'attempt_id' => $attempt?->id, 'attempt_status' => $attempt?->status, 'question_package' => $displayPackage ? ['id' => $displayPackage->id, 'name' => $displayPackage->name, 'total_duration_minutes' => $displayPackage->total_duration_minutes, 'total_questions' => $displayPackage->total_questions] : null];
+        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source, 'retake_granted_at' => $r->retake_granted_at?->toISOString(), 'retake_consumed_at' => $r->retake_consumed_at?->toISOString()], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $canStart, 'has_attempt' => (bool) $activeAttempt, 'attempt_id' => $activeAttempt?->id, 'attempt_status' => $activeAttempt?->status ?? $attempt?->status, 'question_package' => $displayPackage ? ['id' => $displayPackage->id, 'name' => $displayPackage->name, 'total_duration_minutes' => $displayPackage->total_duration_minutes, 'total_questions' => $displayPackage->total_questions] : null];
     }
 
     private function resolvedPayment(ExamRegistration $registration): ?Payment

@@ -16,7 +16,7 @@ class PartnerScheduleConfirmationMail extends Mailable
 
     public function build(): self
     {
-        return $this->subject('Konfirmasi Jadwal Ujian TPKA Mitra')
+        return $this->subject('Konfirmasi Jadwal Ujian TPKA')
             ->view('emails.partner.schedule-confirmation');
     }
 }

@@ -6,6 +6,7 @@ use App\Mail\PartnerProfileInvitationMail;
 use App\Mail\PartnerScheduleConfirmationMail;
 use App\Models\ExamRegistration;
 use App\Models\ExamSection;
+use App\Models\Partner;
 use App\Models\Question;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
@@ -31,14 +32,14 @@ class PartnerInvitationTest extends TestCase
 
         $this->getJson('/api/schedules/upcoming')
             ->assertOk()
-            ->assertJsonMissing(['id' => $partnerSchedule->id])
-            ->assertJsonFragment(['id' => $publicSchedule->id]);
+            ->assertJsonMissing(['title' => $partnerSchedule->title, 'is_partner' => true])
+            ->assertJsonFragment(['id' => $publicSchedule->id, 'title' => $publicSchedule->title]);
 
         $this->actingAs($participant, 'sanctum')
             ->getJson('/api/participant/schedules')
             ->assertOk()
-            ->assertJsonMissing(['id' => $partnerSchedule->id])
-            ->assertJsonFragment(['id' => $publicSchedule->id]);
+            ->assertJsonMissing(['id' => $partnerSchedule->id, 'title' => $partnerSchedule->title])
+            ->assertJsonFragment(['id' => $publicSchedule->id, 'title' => $publicSchedule->title]);
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$partnerSchedule->id}/register")
@@ -132,6 +133,24 @@ class PartnerInvitationTest extends TestCase
         ]);
     }
 
+    public function test_partner_detail_returns_affiliated_schedules(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(true);
+        $partner = Partner::findOrFail($schedule->partner_id);
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson("/api/partners/{$partner->id}")
+            ->assertOk()
+            ->assertJsonPath('partner.id', $partner->id)
+            ->assertJsonPath('partner.name', $partner->name)
+            ->assertJsonPath('partner.schedules_count', 1)
+            ->assertJsonPath('schedules.data.0.id', $schedule->id)
+            ->assertJsonPath('schedules.data.0.partner_id', $partner->id)
+            ->assertJsonPath('schedules.data.0.is_partner', true);
+    }
+
     public function test_partner_onboarding_claim_completes_profile_and_allows_start_without_payment(): void
     {
         Storage::fake('public');
@@ -182,9 +201,89 @@ class PartnerInvitationTest extends TestCase
             ->assertJsonPath('status', 'in_progress');
     }
 
+    public function test_admin_can_add_existing_participant_to_regular_schedule_and_send_confirmation_email(): void
+    {
+        Mail::fake();
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $participant = User::create([
+            'name' => 'Peserta Existing',
+            'email' => 'existing@example.com',
+            'password' => 'Password=1',
+            'role' => 'peserta',
+            'is_active' => true,
+            'email_verified_at' => now(),
+            'profile_completed_at' => now(),
+        ]);
+        $schedule = $this->createSchedule(false);
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/schedules/{$schedule->id}/participants", [
+                'user_id' => $participant->id,
+                'email' => $participant->email,
+                'name' => $participant->name,
+            ])
+            ->assertOk()
+            ->assertJsonPath('participant.id', $participant->id)
+            ->assertJsonPath('participant.created_user', false)
+            ->assertJsonPath('participant.sent_confirmation', true)
+            ->assertJsonPath('participant.sent_invitation', false);
+
+        $this->assertDatabaseHas('exam_registrations', [
+            'user_id' => $participant->id,
+            'schedule_id' => $schedule->id,
+            'status' => 'approved',
+            'access_status' => 'unlocked',
+            'registration_source' => 'admin',
+        ]);
+        Mail::assertSent(PartnerScheduleConfirmationMail::class, fn ($mail) => $mail->hasTo('existing@example.com'));
+    }
+
+    public function test_admin_can_add_new_participant_to_regular_schedule_and_send_onboarding_email(): void
+    {
+        Mail::fake();
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(false);
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/schedules/{$schedule->id}/participants", [
+                'email' => 'manual@example.com',
+                'name' => 'Peserta Manual',
+            ])
+            ->assertOk()
+            ->assertJsonPath('participant.email', 'manual@example.com')
+            ->assertJsonPath('participant.created_user', true)
+            ->assertJsonPath('participant.sent_invitation', true)
+            ->assertJsonPath('participant.sent_confirmation', false);
+
+        $user = User::where('email', 'manual@example.com')->firstOrFail();
+        $this->assertDatabaseHas('exam_registrations', [
+            'user_id' => $user->id,
+            'schedule_id' => $schedule->id,
+            'status' => 'approved',
+            'access_status' => 'unlocked',
+            'registration_source' => 'admin',
+        ]);
+        $this->assertDatabaseHas('partner_invitations', [
+            'user_id' => $user->id,
+            'schedule_id' => $schedule->id,
+        ]);
+        Mail::assertSent(PartnerProfileInvitationMail::class, fn ($mail) => $mail->hasTo('manual@example.com'));
+    }
+
     private function createSchedule(bool $partner): Schedule
     {
         $admin = User::where('role', 'administrator')->firstOrFail();
+        $partnerModel = $partner
+            ? Partner::create([
+                'name' => 'Mitra Test',
+                'contact_name' => 'PIC Mitra',
+                'contact_email' => 'mitra@example.com',
+                'contact_phone' => '08123456789',
+                'is_active' => true,
+            ])
+            : null;
         $package = QuestionPackage::create([
             'name' => 'Paket Mitra Test',
             'status' => 'published',
@@ -221,6 +320,7 @@ class PartnerInvitationTest extends TestCase
 
         return Schedule::create([
             'question_package_id' => $package->id,
+            'partner_id' => $partnerModel?->id,
             'title' => $partner ? 'Jadwal Mitra Test' : 'Jadwal Umum Test',
             'start_at' => now()->subMinute(),
             'end_at' => now()->addMinutes(30),
