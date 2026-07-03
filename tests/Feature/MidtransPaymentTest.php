@@ -60,7 +60,8 @@ class MidtransPaymentTest extends TestCase
     {
         $this->seed(DatabaseSeeder::class);
         $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(150000);
+        $expectedAmount = 175000;
+        $schedule = $this->createSchedule($expectedAmount);
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$schedule->id}/register")
@@ -69,9 +70,12 @@ class MidtransPaymentTest extends TestCase
             ->assertJsonPath('registration.status', 'pending_payment')
             ->assertJsonPath('registration.access_status', 'locked')
             ->assertJsonPath('payment.transaction_status', 'pending')
+            ->assertJsonPath('payment.amount', $expectedAmount)
+            ->assertJsonPath('data.amount', $expectedAmount)
             ->assertJsonStructure(['midtrans' => ['client_key', 'snap_token', 'redirect_url']]);
 
         $payment = Payment::firstOrFail();
+        $this->assertSame((string) $schedule->price, (string) $payment->amount);
         $this->assertStringStartsWith('test-snap-token-', (string) $payment->snap_token);
 
         $this->actingAs($participant, 'sanctum')
@@ -115,7 +119,13 @@ class MidtransPaymentTest extends TestCase
         $this->seed(DatabaseSeeder::class);
         $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
         $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(150000, true);
+        $schedule = $this->createSchedule(175000, true)->forceFill([
+            'start_at' => now()->addHour(),
+            'end_at' => now()->addHours(2),
+            'registration_start_at' => now()->subDay(),
+            'registration_end_at' => now()->addMinutes(30),
+        ]);
+        $schedule->save();
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$schedule->id}/register")
@@ -123,7 +133,11 @@ class MidtransPaymentTest extends TestCase
             ->assertJsonPath('message', 'Jadwal ini khusus peserta mitra.');
 
         $this->actingAs($admin, 'sanctum')
-            ->postJson("/api/schedules/{$schedule->id}/participants", ['user_id' => $participant->id])
+            ->postJson("/api/schedules/{$schedule->id}/participants", [
+                'user_id' => $participant->id,
+                'email' => $participant->email,
+                'name' => $participant->name,
+            ])
             ->assertOk()
             ->assertJsonPath('message', 'Peserta ditambahkan.');
 
@@ -132,6 +146,11 @@ class MidtransPaymentTest extends TestCase
         $this->assertSame('unlocked', $registration->access_status);
         $this->assertSame('partner', $registration->registration_source);
         $this->assertNull($registration->payment_id);
+
+        $schedule->forceFill([
+            'start_at' => now()->subMinute(),
+            'end_at' => now()->addMinutes(30),
+        ])->save();
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
@@ -143,13 +162,15 @@ class MidtransPaymentTest extends TestCase
     {
         $this->seed(DatabaseSeeder::class);
         $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(150000);
+        $expectedAmount = 200000;
+        $schedule = $this->createSchedule($expectedAmount);
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$schedule->id}/register")
             ->assertSuccessful();
 
         $firstPayment = Payment::firstOrFail();
+        $this->assertSame((string) $schedule->price, (string) $firstPayment->amount);
         $this->postJson('/api/payments/midtrans/callback', $this->callbackPayload($firstPayment, 'expire'))
             ->assertOk();
 
@@ -174,12 +195,15 @@ class MidtransPaymentTest extends TestCase
     {
         $this->seed(DatabaseSeeder::class);
         $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(150000);
+        $expectedAmount = 250000;
+        $schedule = $this->createSchedule($expectedAmount);
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$schedule->id}/register")
             ->assertSuccessful()
-            ->assertJsonPath('registration.status', 'pending_payment');
+            ->assertJsonPath('registration.status', 'pending_payment')
+            ->assertJsonPath('payment.amount', $expectedAmount)
+            ->assertJsonPath('data.amount', $expectedAmount);
 
         $payment = Payment::firstOrFail();
         $grossAmount = number_format((float) $payment->amount, 2, '.', '');
@@ -230,8 +254,7 @@ class MidtransPaymentTest extends TestCase
             ->postJson('/api/schedules', [
                 'start_at' => now()->addDay()->format('Y-m-d\TH:i'),
                 'registration_start_at' => now()->format('Y-m-d\TH:i'),
-                'registration_end_at' => now()->addHours(6)->format('Y-m-d\TH:i'),
-                'price' => 150000,
+                'price' => 175000,
                 'quota' => 50,
                 'is_partner' => false,
             ])
@@ -239,11 +262,36 @@ class MidtransPaymentTest extends TestCase
             ->assertJsonPath('data.question_package_id', null);
     }
 
+    public function test_schedule_registration_close_time_is_automatically_set_thirty_minutes_before_start(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $this->createPackage('Paket Acak A');
+        $startAt = now()->addDay()->setSecond(0);
+
+        $response = $this->actingAs($admin, 'sanctum')
+            ->postJson('/api/schedules', [
+                'start_at' => $startAt->format('Y-m-d\TH:i'),
+                'registration_start_at' => now()->format('Y-m-d\TH:i'),
+                'price' => 200000,
+                'quota' => 50,
+                'is_partner' => false,
+            ])
+            ->assertCreated();
+
+        $scheduleId = $response->json('data.id');
+        $schedule = Schedule::findOrFail($scheduleId);
+
+        $this->assertTrue(
+            $schedule->registration_end_at->equalTo($schedule->start_at->copy()->subMinutes(30))
+        );
+    }
+
     public function test_schedule_detail_exposes_all_published_packages_for_random_assignment(): void
     {
         $this->seed(DatabaseSeeder::class);
         $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(150000);
+        $schedule = $this->createSchedule(250000);
         $secondPackage = $this->createPackage('Paket Acak B');
 
         $this->actingAs($admin, 'sanctum')

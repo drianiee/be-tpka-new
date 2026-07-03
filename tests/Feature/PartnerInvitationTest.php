@@ -52,7 +52,7 @@ class PartnerInvitationTest extends TestCase
         Mail::fake();
         $this->seed(DatabaseSeeder::class);
         $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(true);
+        $schedule = $this->createFutureSchedule(true);
 
         $this->actingAs($admin, 'sanctum')
             ->post("/api/schedules/{$schedule->id}/partner/import", [
@@ -77,7 +77,7 @@ class PartnerInvitationTest extends TestCase
         Mail::fake();
         $this->seed(DatabaseSeeder::class);
         $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(true);
+        $schedule = $this->createFutureSchedule(true);
         User::create([
             'name' => 'Peserta Lengkap',
             'email' => 'lengkap@example.com',
@@ -105,7 +105,7 @@ class PartnerInvitationTest extends TestCase
         Mail::fake();
         $this->seed(DatabaseSeeder::class);
         $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(true);
+        $schedule = $this->createFutureSchedule(true);
         $user = User::create([
             'name' => 'Andrian',
             'email' => 'andrian@example.com',
@@ -215,7 +215,7 @@ class PartnerInvitationTest extends TestCase
             'email_verified_at' => now(),
             'profile_completed_at' => now(),
         ]);
-        $schedule = $this->createSchedule(false);
+        $schedule = $this->createFutureSchedule(false);
 
         $this->actingAs($admin, 'sanctum')
             ->postJson("/api/schedules/{$schedule->id}/participants", [
@@ -244,7 +244,7 @@ class PartnerInvitationTest extends TestCase
         Mail::fake();
         $this->seed(DatabaseSeeder::class);
         $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
-        $schedule = $this->createSchedule(false);
+        $schedule = $this->createFutureSchedule(false);
 
         $this->actingAs($admin, 'sanctum')
             ->postJson("/api/schedules/{$schedule->id}/participants", [
@@ -270,6 +270,188 @@ class PartnerInvitationTest extends TestCase
             'schedule_id' => $schedule->id,
         ]);
         Mail::assertSent(PartnerProfileInvitationMail::class, fn ($mail) => $mail->hasTo('manual@example.com'));
+    }
+
+    public function test_admin_cannot_add_manual_participant_after_schedule_started(): void
+    {
+        Mail::fake();
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(false)->forceFill([
+            'start_at' => now()->subMinute(),
+            'end_at' => now()->addHour(),
+        ]);
+        $schedule->save();
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/schedules/{$schedule->id}/participants", [
+                'email' => 'blocked@example.com',
+                'name' => 'Blocked User',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Peserta tidak dapat ditambahkan setelah waktu tes dimulai.');
+    }
+
+    public function test_admin_cannot_import_partner_participants_after_schedule_started(): void
+    {
+        Mail::fake();
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createSchedule(true)->forceFill([
+            'start_at' => now()->subMinute(),
+            'end_at' => now()->addHour(),
+        ]);
+        $schedule->save();
+
+        $this->actingAs($admin, 'sanctum')
+            ->post("/api/schedules/{$schedule->id}/partner/import", [
+                'file' => $this->csvUpload("name,email\nPeserta Mitra,mitra-late@example.com\n"),
+            ], ['Accept' => 'application/json'])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Peserta tidak dapat diimport setelah waktu tes dimulai.');
+    }
+
+    public function test_schedule_detail_filters_participants_by_search_query(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createFutureSchedule(false);
+        $matchedUser = User::create([
+            'name' => 'Peserta Alpha',
+            'email' => 'alpha@example.com',
+            'password' => 'Password=1',
+            'role' => 'peserta',
+            'is_active' => true,
+            'email_verified_at' => now(),
+            'profile_completed_at' => now(),
+        ]);
+        $otherUser = User::create([
+            'name' => 'Peserta Beta',
+            'email' => 'beta@example.com',
+            'password' => 'Password=1',
+            'role' => 'peserta',
+            'is_active' => true,
+            'email_verified_at' => now(),
+            'profile_completed_at' => now(),
+        ]);
+
+        foreach ([$matchedUser, $otherUser] as $user) {
+            ExamRegistration::create([
+                'user_id' => $user->id,
+                'schedule_id' => $schedule->id,
+                'status' => 'approved',
+                'access_status' => 'unlocked',
+                'registration_source' => 'admin',
+                'registered_at' => now(),
+            ]);
+        }
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson("/api/schedules/{$schedule->id}?q=alpha")
+            ->assertOk()
+            ->assertJsonCount(1, 'participants.data')
+            ->assertJsonPath('participants.data.0.email', 'alpha@example.com');
+    }
+
+    public function test_admin_can_export_filtered_schedule_participants_as_xlsx(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createFutureSchedule(false);
+        $user = User::create([
+            'name' => 'Peserta Export',
+            'email' => 'export@example.com',
+            'password' => 'Password=1',
+            'role' => 'peserta',
+            'is_active' => true,
+            'email_verified_at' => now(),
+            'profile_completed_at' => now(),
+        ]);
+
+        ExamRegistration::create([
+            'user_id' => $user->id,
+            'schedule_id' => $schedule->id,
+            'status' => 'approved',
+            'access_status' => 'unlocked',
+            'registration_source' => 'admin',
+            'registered_at' => now(),
+        ]);
+
+        $response = $this->actingAs($admin, 'sanctum')
+            ->get("/api/schedules/{$schedule->id}/participants/export?q=export");
+
+        $response->assertOk();
+        $response->assertHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        $response->assertHeader('content-disposition');
+    }
+
+    public function test_admin_can_export_partner_schedules_as_xlsx(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createFutureSchedule(true);
+        $partner = Partner::findOrFail($schedule->partner_id);
+
+        $response = $this->actingAs($admin, 'sanctum')
+            ->get("/api/partners/{$partner->id}/schedules/export");
+
+        $response->assertOk();
+        $response->assertHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        $response->assertHeader('content-disposition');
+    }
+
+    public function test_admin_can_filter_schedules_by_status_partner_and_date(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+
+        $future = $this->createFutureSchedule(true);
+        $future->partner->update(['name' => 'Partner Filter A']);
+
+        $ongoing = $this->createSchedule(false)->forceFill([
+            'start_at' => now()->subMinutes(10),
+            'end_at' => now()->addMinutes(20),
+        ]);
+        $ongoing->save();
+
+        $finished = $this->createSchedule(false)->forceFill([
+            'start_at' => now()->subHours(2),
+            'end_at' => now()->subHour(),
+        ]);
+        $finished->save();
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/schedules?status=belum-dimulai&q=Partner%20Filter%20A&date_from='.$future->start_at->toDateString().'&date_to='.$future->start_at->toDateString())
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $future->id)
+            ->assertJsonCount(1, 'data');
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/schedules?status=sedang-berlangsung')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $ongoing->id)
+            ->assertJsonPath('data.0.status', 'sedang-berlangsung')
+            ->assertJsonCount(1, 'data');
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/schedules?status=telah-selesai')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $finished->id, 'status' => 'telah-selesai']);
+    }
+
+    public function test_admin_can_export_filtered_schedules_as_xlsx(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $admin = User::where('email', 'admin@tpka.com')->firstOrFail();
+        $schedule = $this->createFutureSchedule(true);
+        $schedule->partner->update(['name' => 'Partner Export']);
+
+        $response = $this->actingAs($admin, 'sanctum')
+            ->get('/api/schedules?export=1&status=belum-dimulai&q=Partner%20Export');
+
+        $response->assertOk();
+        $response->assertHeader('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        $response->assertHeader('content-disposition');
     }
 
     private function createSchedule(bool $partner): Schedule
@@ -332,6 +514,19 @@ class PartnerInvitationTest extends TestCase
             'is_partner' => $partner,
             'created_by' => $admin->id,
         ]);
+    }
+
+    private function createFutureSchedule(bool $partner): Schedule
+    {
+        $schedule = $this->createSchedule($partner);
+        $schedule->forceFill([
+            'start_at' => now()->addHour(),
+            'end_at' => now()->addHours(2),
+            'registration_start_at' => now()->subDay(),
+            'registration_end_at' => now()->addDay(),
+        ])->save();
+
+        return $schedule->fresh();
     }
 
     private function csvUpload(string $content): UploadedFile

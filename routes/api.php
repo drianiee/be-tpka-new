@@ -59,7 +59,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedules/{schedule}/participants', [ScheduleController::class, 'addParticipant']);
         Route::delete('schedules/{schedule}/participants/{userId}', [ScheduleController::class, 'removeParticipant']);
         Route::post('schedules/{schedule}/participants/{userId}/retake', [ScheduleController::class, 'grantRetake']);
-        Route::get('schedules/{schedule}/participants/export', fn () => ['message' => 'Export belum diaktifkan.', 'download_url' => null]);
+        Route::get('schedules/{schedule}/participants/export', [ScheduleController::class, 'exportParticipants']);
         Route::get('schedules/{schedule}/partner/import-template', [ScheduleController::class, 'partnerImportTemplate']);
         Route::post('schedules/{schedule}/partner/import', [ScheduleController::class, 'importPartnerParticipants']);
 
@@ -67,6 +67,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('participants/{participant}', [ParticipantController::class, 'show']);
 
         Route::get('partners', fn (Request $r) => Partner::paginate($r->integer('per_page', 10)));
+        Route::get('partners/{partner}/schedules/export', [ScheduleController::class, 'exportPartnerSchedules']);
         Route::post('partners', function (Request $r) {
             $data = $r->validate([
                 'name' => 'required|string',

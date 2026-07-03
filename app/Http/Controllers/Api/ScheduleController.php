@@ -7,6 +7,7 @@ use App\Http\Requests\StoreScheduleRequest;
 use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\Payment;
+use App\Models\Partner;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
 use App\Services\ExamAttemptService;
@@ -15,6 +16,8 @@ use App\Services\QuestionPackageAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Validation\ValidationException;
 
 class ScheduleController extends Controller
@@ -26,7 +29,19 @@ class ScheduleController extends Controller
 
     public function index(Request $request)
     {
-        return Schedule::with(['package', 'registrations'])->when($request->filled('q'), fn ($q) => $q->where('title', 'like', '%'.$request->q.'%'))->latest()->paginate($request->integer('per_page', 10))->through(fn ($s) => $this->legacy($s));
+        $query = Schedule::query()
+            ->with(['package', 'registrations', 'partner'])
+            ->latest('start_at');
+
+        $this->applyIndexFilters($query, $request);
+
+        if ($request->boolean('export')) {
+            return $this->downloadSchedulesExport((clone $query)->get());
+        }
+
+        return $query
+            ->paginate($request->integer('per_page', 10))
+            ->through(fn ($s) => $this->legacy($s));
     }
 
     public function upcoming()
@@ -41,9 +56,51 @@ class ScheduleController extends Controller
         return response()->json(['message' => 'Jadwal dibuat.', 'data' => $this->legacy($schedule->load('package'))], 201);
     }
 
-    public function show(Schedule $schedule)
+    public function show(Request $request, Schedule $schedule)
     {
-        return $this->legacy($schedule->load(['package.sections', 'registrations.user', 'registrations.package', 'registrations.payment', 'registrations.payments', 'attempts.scores']));
+        $participantQuery = ExamRegistration::query()
+            ->where('schedule_id', $schedule->id)
+            ->with(['user', 'package', 'payment', 'payments']);
+
+        if ($request->filled('q')) {
+            $term = trim((string) $request->string('q'));
+            $participantQuery->whereHas('user', function (Builder $query) use ($term) {
+                $query
+                    ->where('name', 'like', '%'.$term.'%')
+                    ->orWhere('email', 'like', '%'.$term.'%');
+            });
+        }
+
+        $participants = $participantQuery
+            ->orderByDesc('id')
+            ->paginate($request->integer('per_page', 10));
+
+        $userIds = collect($participants->items())
+            ->pluck('user_id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $attempts = ExamAttempt::query()
+            ->where('schedule_id', $schedule->id)
+            ->when($userIds->isNotEmpty(), fn (Builder $query) => $query->whereIn('user_id', $userIds))
+            ->with(['scores', 'package.sections'])
+            ->get()
+            ->map(function (ExamAttempt $attempt) {
+                if (in_array($attempt->status, ['submitted', 'expired'], true)) {
+                    return $this->examAttemptService
+                        ->recalculateCompletedAttempt($attempt)
+                        ->loadMissing(['scores', 'package.sections']);
+                }
+
+                return $attempt->loadMissing(['scores', 'package.sections']);
+            });
+
+        return $this->legacy(
+            $schedule->load(['package.sections', 'partner']),
+            $participants,
+            $attempts,
+        );
     }
 
     public function update(StoreScheduleRequest $request, Schedule $schedule)
@@ -63,6 +120,8 @@ class ScheduleController extends Controller
 
     public function addParticipant(Request $request, Schedule $schedule)
     {
+        abort_if(now()->greaterThanOrEqualTo($schedule->start_at), 422, 'Peserta tidak dapat ditambahkan setelah waktu tes dimulai.');
+
         $data = $request->validate([
             'user_id' => ['nullable', 'exists:users,id'],
             'email' => ['required', 'email'],
@@ -132,6 +191,8 @@ class ScheduleController extends Controller
 
     public function importPartnerParticipants(Request $request, Schedule $schedule, PartnerInvitationService $invitations)
     {
+        abort_if(now()->greaterThanOrEqualTo($schedule->start_at), 422, 'Peserta tidak dapat diimport setelah waktu tes dimulai.');
+
         $data = $request->validate(['file' => ['required', 'file', 'mimes:csv,txt,xlsx', 'max:10240']]);
         $summary = $invitations->import($schedule, $data['file'], $request->user());
 
@@ -150,10 +211,115 @@ class ScheduleController extends Controller
         )->deleteFileAfterSend(true);
     }
 
-    private function legacy(Schedule $s): array
+    public function exportParticipants(Request $request, Schedule $schedule)
+    {
+        $query = ExamRegistration::query()
+            ->where('schedule_id', $schedule->id)
+            ->with(['user', 'package', 'payment', 'payments']);
+
+        if ($request->filled('q')) {
+            $term = trim((string) $request->string('q'));
+            $query->whereHas('user', function (Builder $builder) use ($term) {
+                $builder
+                    ->where('name', 'like', '%'.$term.'%')
+                    ->orWhere('email', 'like', '%'.$term.'%');
+            });
+        }
+
+        $registrations = $query->orderByDesc('id')->get();
+        $attempts = ExamAttempt::query()
+            ->where('schedule_id', $schedule->id)
+            ->whereIn('user_id', $registrations->pluck('user_id')->filter()->unique()->values())
+            ->with(['scores', 'package.sections'])
+            ->get()
+            ->map(function (ExamAttempt $attempt) {
+                if (in_array($attempt->status, ['submitted', 'expired'], true)) {
+                    return $this->examAttemptService
+                        ->recalculateCompletedAttempt($attempt)
+                        ->loadMissing(['scores', 'package.sections']);
+                }
+
+                return $attempt->loadMissing(['scores', 'package.sections']);
+            });
+
+        $rows = [[
+            'No', 'Nama', 'Email', 'Status', 'Paket', 'Verbal', 'Kuantitatif', 'Logika', 'Spasial', 'Total',
+        ]];
+
+        $isPartnerSchedule = (bool) ($schedule->is_partner || $schedule->partner_id);
+
+        foreach ($registrations->values() as $index => $registration) {
+            $attempt = $attempts->where('user_id', $registration->user_id)->sortByDesc('id')->first();
+            $payment = $this->resolvedRegistrationPayment($registration);
+            $statusMeta = $this->participantStatusMeta($registration, $attempt, $isPartnerSchedule, $payment);
+            $scores = $attempt ? $this->sectionScores($attempt) : [];
+
+            $rows[] = [
+                (string) ($index + 1),
+                (string) ($registration->user?->name ?? '-'),
+                (string) ($registration->user?->email ?? '-'),
+                (string) ($statusMeta['label'] ?? '-'),
+                (string) ($registration->package?->name ?? '-'),
+                $this->scoreExportValue($scores['verbal'] ?? null),
+                $this->scoreExportValue($scores['kuantitatif'] ?? null),
+                $this->scoreExportValue($scores['logika'] ?? null),
+                $this->scoreExportValue($scores['spasial'] ?? null),
+                $this->scoreExportValue($scores['total'] ?? null),
+            ];
+        }
+
+        $path = $this->createXlsxFile($rows, 'Peserta Jadwal');
+
+        return response()->download(
+            $path,
+            'schedule-'.$schedule->id.'-participants-'.now()->format('Ymd-His').'.xlsx',
+            ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']
+        )->deleteFileAfterSend(true);
+    }
+
+    public function exportPartnerSchedules(Request $request, Partner $partner)
+    {
+        $schedules = Schedule::query()
+            ->where('partner_id', $partner->id)
+            ->withCount('registrations')
+            ->latest('start_at')
+            ->get();
+
+        $rows = [[
+            'No', 'ID Jadwal', 'Tanggal', 'Jam Mulai', 'Jam Selesai', 'Harga', 'Kapasitas', 'Peserta', 'Status',
+        ]];
+
+        foreach ($schedules->values() as $index => $schedule) {
+            $rows[] = [
+                (string) ($index + 1),
+                (string) $schedule->id,
+                $schedule->start_at->translatedFormat('d M Y'),
+                $schedule->start_at->format('H:i'),
+                $schedule->end_at->format('H:i'),
+                (string) ((int) round((float) $schedule->price)),
+                (string) $schedule->quota,
+                (string) $schedule->registrations_count,
+                $this->scheduleWindowStatusLabel($schedule),
+            ];
+        }
+
+        $path = $this->createXlsxFile($rows, 'Jadwal Mitra');
+
+        return response()->download(
+            $path,
+            'partner-'.$partner->id.'-schedules-'.now()->format('Ymd-His').'.xlsx',
+            ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']
+        )->deleteFileAfterSend(true);
+    }
+
+    private function legacy(
+        Schedule $s,
+        ?LengthAwarePaginator $participantPage = null,
+        ?Collection $attempts = null,
+    ): array
     {
         $start = $s->start_at;
-        $attempts = $s->relationLoaded('attempts')
+        $attempts = $attempts ?? ($s->relationLoaded('attempts')
             ? $s->attempts->map(function (ExamAttempt $attempt) {
                 if (in_array($attempt->status, ['submitted', 'expired'], true)) {
                     return $this->examAttemptService->recalculateCompletedAttempt($attempt)->loadMissing(['scores', 'package.sections']);
@@ -161,12 +327,15 @@ class ScheduleController extends Controller
 
                 return $attempt->loadMissing(['scores', 'package.sections']);
             })
-            : collect();
+            : collect());
+        $participantItems = $participantPage
+            ? collect($participantPage->items())
+            : ($s->relationLoaded('registrations') ? $s->registrations : collect());
 
         $isPartnerSchedule = (bool) ($s->is_partner || $s->partner_id);
         $availablePackages = $this->packageAssignments->availablePackages($s);
 
-        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations->count(), 'question_package_id' => $s->question_package_id, 'packages' => $availablePackages->map(fn ($package) => ['id' => $package->id, 'name' => $package->name, 'status' => $package->status, 'total_questions' => $package->total_questions, 'total_duration_minutes' => $package->total_duration_minutes])->values(), 'attempt_count' => $attempts->count(), 'submitted_count' => $attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $s->relationLoaded('registrations') ? $s->registrations->map(function ($r) use ($attempts, $isPartnerSchedule) {
+        return ['id' => $s->id, 'title' => $s->title, 'description' => $s->description, 'date' => $start->format('Y-m-d H:i:s'), 'start_time' => $start->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'start_at' => $start->toISOString(), 'end_at' => $s->end_at->toISOString(), 'price' => (string) $s->price, 'capacity' => $s->quota, 'quota' => $s->quota, 'status' => $this->scheduleWindowStatus($s), 'is_partner' => $isPartnerSchedule, 'partner_id' => $s->partner_id, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'current_participants' => $s->registrations()->count(), 'question_package_id' => $s->question_package_id, 'packages' => $availablePackages->map(fn ($package) => ['id' => $package->id, 'name' => $package->name, 'status' => $package->status, 'total_questions' => $package->total_questions, 'total_duration_minutes' => $package->total_duration_minutes])->values(), 'attempt_count' => $attempts->count(), 'submitted_count' => $attempts->whereIn('status', ['submitted', 'expired'])->count(), 'participants' => ['data' => $participantItems->map(function ($r) use ($attempts, $isPartnerSchedule) {
             $attempt = $attempts->where('user_id', $r->user_id)->sortByDesc('id')->first();
             $payment = $this->resolvedRegistrationPayment($r);
             $statusMeta = $this->participantStatusMeta($r, $attempt, $isPartnerSchedule, $payment);
@@ -184,8 +353,135 @@ class ScheduleController extends Controller
                 'email_verified_at' => $r->user?->email_verified_at?->toISOString(),
                 'question_package' => $package ? ['id' => $package->id, 'name' => $package->name] : null,
                 'scores' => $attempt ? $this->sectionScores($attempt) : null,
+                'certificate_download_url' => null,
             ];
-        })->values() : [], 'current_page' => 1, 'last_page' => 1, 'per_page' => 100, 'total' => $s->registrations->count()]];
+        })->values(), 'current_page' => $participantPage?->currentPage() ?? 1, 'last_page' => $participantPage?->lastPage() ?? 1, 'per_page' => $participantPage?->perPage() ?? 100, 'total' => $participantPage?->total() ?? $s->registrations()->count(), 'from' => $participantPage?->firstItem(), 'to' => $participantPage?->lastItem()]];
+    }
+
+    private function applyIndexFilters(Builder $query, Request $request): void
+    {
+        if ($request->filled('q')) {
+            $term = trim((string) $request->string('q'));
+            $driver = $query->getModel()->getConnection()->getDriverName();
+            $dateTimeExpression = $driver === 'sqlite'
+                ? "strftime('%Y-%m-%d %H:%M:%S', start_at)"
+                : "DATE_FORMAT(start_at, '%Y-%m-%d %H:%i:%s')";
+            $dateExpression = $driver === 'sqlite'
+                ? "strftime('%d/%m/%Y %H:%M', start_at)"
+                : "DATE_FORMAT(start_at, '%d/%m/%Y %H:%i')";
+
+            $query->where(function (Builder $builder) use ($term, $dateTimeExpression, $dateExpression) {
+                $builder
+                    ->where('title', 'like', '%'.$term.'%')
+                    ->orWhereHas('partner', fn (Builder $partnerQuery) => $partnerQuery->where('name', 'like', '%'.$term.'%'))
+                    ->orWhereRaw($dateTimeExpression.' like ?', ['%'.$term.'%'])
+                    ->orWhereRaw($dateExpression.' like ?', ['%'.$term.'%']);
+
+                if (ctype_digit($term)) {
+                    $builder->orWhere('id', (int) $term);
+                }
+            });
+        }
+
+        if ($request->filled('date_from')) {
+            $query->whereDate('start_at', '>=', Carbon::parse((string) $request->string('date_from'))->toDateString());
+        }
+
+        if ($request->filled('date_to')) {
+            $query->whereDate('start_at', '<=', Carbon::parse((string) $request->string('date_to'))->toDateString());
+        }
+
+        if ($request->filled('status')) {
+            $this->applyStatusFilter($query, (string) $request->string('status'));
+        }
+    }
+
+    private function applyStatusFilter(Builder $query, string $status): void
+    {
+        $normalized = strtolower(trim($status));
+        $now = now();
+
+        if (in_array($normalized, ['belum-dimulai', 'belum dimulai'], true)) {
+            $query->where('start_at', '>', $now);
+
+            return;
+        }
+
+        if (in_array($normalized, ['sedang-berlangsung', 'sedang berlangsung'], true)) {
+            $query->where('start_at', '<=', $now)
+                ->where('end_at', '>', $now);
+
+            return;
+        }
+
+        if (in_array($normalized, ['selesai', 'telah-selesai', 'telah selesai'], true)) {
+            $query->where('end_at', '<=', $now);
+        }
+    }
+
+    private function scheduleWindowStatus(Schedule $schedule): string
+    {
+        if (now()->lt($schedule->start_at)) {
+            return 'belum-dimulai';
+        }
+
+        if (now()->gte($schedule->end_at)) {
+            return 'telah-selesai';
+        }
+
+        return 'sedang-berlangsung';
+    }
+
+    private function scheduleWindowStatusLabel(Schedule $schedule): string
+    {
+        return match ($this->scheduleWindowStatus($schedule)) {
+            'belum-dimulai' => 'Belum Dimulai',
+            'sedang-berlangsung' => 'Sedang Berlangsung',
+            default => 'Selesai',
+        };
+    }
+
+    private function scoreExportValue(mixed $value): string
+    {
+        if ($value === null) {
+            return '-';
+        }
+
+        $numeric = (float) $value;
+
+        return floor($numeric) === $numeric
+            ? (string) (int) $numeric
+            : number_format($numeric, 2, '.', '');
+    }
+
+    private function downloadSchedulesExport(Collection $schedules)
+    {
+        $rows = [
+            ['No', 'ID Jadwal', 'Tanggal', 'Jam Mulai', 'Jam Selesai', 'Harga', 'Partner', 'Kapasitas', 'Peserta', 'Status'],
+        ];
+
+        foreach ($schedules->values() as $index => $schedule) {
+            $rows[] = [
+                (string) ($index + 1),
+                (string) $schedule->id,
+                $schedule->start_at->translatedFormat('d M Y'),
+                $schedule->start_at->format('H:i'),
+                $schedule->end_at->format('H:i'),
+                (string) ((int) round((float) $schedule->price)),
+                $schedule->partner?->name ?? '-',
+                (string) $schedule->quota,
+                (string) $schedule->registrations->count(),
+                $this->scheduleWindowStatusLabel($schedule),
+            ];
+        }
+
+        $path = $this->createXlsxFile($rows, 'Schedules');
+
+        return response()->download(
+            $path,
+            'schedules-'.now()->format('Ymd-His').'.xlsx',
+            ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']
+        )->deleteFileAfterSend(true);
     }
 
     private function resolvedRegistrationPayment(ExamRegistration $registration): ?Payment
@@ -279,7 +575,15 @@ class ScheduleController extends Controller
 
     private function createPartnerImportTemplateXlsx(): string
     {
-        $path = tempnam(sys_get_temp_dir(), 'partner-import-template-');
+        return $this->createXlsxFile([
+            ['name', 'email'],
+            ['Contoh Peserta', 'peserta@example.com'],
+        ], 'Peserta Mitra', 'partner-import-template-');
+    }
+
+    private function createXlsxFile(array $rows, string $sheetName, string $prefix = 'xlsx-export-'): string
+    {
+        $path = tempnam(sys_get_temp_dir(), $prefix);
         if ($path === false) {
             abort(500, 'Gagal membuat file template.');
         }
@@ -289,14 +593,9 @@ class ScheduleController extends Controller
             abort(500, 'Gagal menyiapkan file template.');
         }
 
-        $rows = [
-            ['name', 'email'],
-            ['Contoh Peserta', 'peserta@example.com'],
-        ];
-
         $zip->addFromString('[Content_Types].xml', $this->xlsxContentTypesXml());
         $zip->addFromString('_rels/.rels', $this->xlsxRootRelsXml());
-        $zip->addFromString('xl/workbook.xml', $this->xlsxWorkbookXml());
+        $zip->addFromString('xl/workbook.xml', $this->xlsxWorkbookXml($sheetName));
         $zip->addFromString('xl/_rels/workbook.xml.rels', $this->xlsxWorkbookRelsXml());
         $zip->addFromString('xl/styles.xml', $this->xlsxStylesXml());
         $zip->addFromString('xl/worksheets/sheet1.xml', $this->xlsxWorksheetXml($rows));
@@ -329,16 +628,18 @@ XML;
 XML;
     }
 
-    private function xlsxWorkbookXml(): string
+    private function xlsxWorkbookXml(string $sheetName): string
     {
-        return <<<'XML'
+        $escapedSheetName = htmlspecialchars($sheetName, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+
+        return str_replace('XML_PLACEHOLDER_SHEET_NAME', $escapedSheetName, <<<'XML'
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
-    <sheet name="Peserta Mitra" sheetId="1" r:id="rId1"/>
+    <sheet name="XML_PLACEHOLDER_SHEET_NAME" sheetId="1" r:id="rId1"/>
   </sheets>
 </workbook>
-XML;
+XML);
     }
 
     private function xlsxWorkbookRelsXml(): string
@@ -393,6 +694,10 @@ XML;
 
     private function xlsxWorksheetXml(array $rows): string
     {
+        $lastRow = max(1, count($rows));
+        $maxColumns = max(1, collect($rows)->map(fn (array $row) => count($row))->max() ?? 1);
+        $dimension = 'A1:'.$this->xlsxColumnName($maxColumns).$lastRow;
+
         $rowXml = collect($rows)->map(function (array $row, int $rowIndex) {
             $cells = collect($row)->map(function (string $value, int $columnIndex) use ($rowIndex) {
                 $cellRef = $this->xlsxColumnName($columnIndex + 1).($rowIndex + 1);
@@ -404,10 +709,10 @@ XML;
             return '<row r="'.($rowIndex + 1).'">'.$cells.'</row>';
         })->implode('');
 
-        return <<<XML
+return <<<XML
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <dimension ref="A1:B2"/>
+  <dimension ref="{$dimension}"/>
   <sheetViews>
     <sheetView workbookViewId="0"/>
   </sheetViews>
@@ -441,6 +746,7 @@ XML;
         ]));
 
         $data['question_package_id'] = ! empty($data['question_package_id']) ? $package->id : null;
+        $data['registration_end_at'] = Carbon::parse($data['start_at'])->subMinutes(0);
         if (empty($data['end_at'])) {
             $data['end_at'] = Carbon::parse($data['start_at'])->addMinutes((int) $package->total_duration_minutes);
         }
