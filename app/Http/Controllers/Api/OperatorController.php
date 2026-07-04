@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rules\Password;
 
 class OperatorController extends Controller
 {
@@ -29,7 +30,11 @@ class OperatorController extends Controller
 
     public function store(Request $r)
     {
-        $d = $r->validate(['name' => 'required|string', 'email' => 'required|email|unique:users', 'password' => 'required|min:8']);
+        $d = $r->validate([
+            'name' => 'required|string',
+            'email' => 'required|email|unique:users',
+            'password' => ['required', Password::min(8)->mixedCase()->numbers()],
+        ]);
 
         return response()->json(['message' => 'Operator dibuat.', 'operator' => User::create([...$d, 'role' => 'operator', 'is_active' => true])], 201);
     }

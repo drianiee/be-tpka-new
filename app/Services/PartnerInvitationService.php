@@ -68,6 +68,7 @@ class PartnerInvitationService
         ]);
         $registration->fill([
             'payment_id' => null,
+            'certificate_id' => $registration->certificate_id ?: $schedule->certificate_id,
             'status' => 'approved',
             'access_status' => 'unlocked',
             'registration_source' => $registrationSource,

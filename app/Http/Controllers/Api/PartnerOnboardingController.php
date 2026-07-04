@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ExamRegistration;
 use App\Services\PartnerInvitationService;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rules\Password;
 
 class PartnerOnboardingController extends Controller
 {
@@ -39,7 +40,7 @@ class PartnerOnboardingController extends Controller
     {
         $data = $request->validate([
             'token' => ['required', 'string'],
-            'password' => ['nullable', 'confirmed', 'min:8'],
+            'password' => ['nullable', 'confirmed', Password::min(8)->mixedCase()->numbers()],
             'id_type' => ['nullable', 'in:ktp,ktm,sim'],
             'id_image' => ['nullable', 'image', 'max:4096'],
             'birth_date' => ['nullable', 'date', 'before:today'],
@@ -52,7 +53,7 @@ class PartnerOnboardingController extends Controller
 
         if (! $user->profile_completed_at) {
             $request->validate([
-                'password' => [$user->password ? 'nullable' : 'required', 'confirmed', 'min:8'],
+                'password' => [$user->password ? 'nullable' : 'required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
                 'id_type' => ['required', 'in:ktp,ktm,sim'],
                 'id_image' => ['required', 'image', 'max:4096'],
                 'birth_date' => ['required', 'date', 'before:today'],

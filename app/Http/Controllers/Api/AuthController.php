@@ -9,6 +9,7 @@ use App\Services\EmailVerificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -33,7 +34,11 @@ class AuthController extends Controller
 
     public function register(Request $request)
     {
-        $data = $request->validate(['name' => ['required', 'string', 'max:255'], 'email' => ['required', 'email', 'unique:users'], 'password' => ['required', 'confirmed', 'min:8']]);
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'email', 'unique:users'],
+            'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
+        ]);
         $user = User::create([...$data, 'role' => 'peserta', 'is_active' => true]);
         $this->emailVerification->send($user);
 

@@ -16,6 +16,7 @@ use App\Services\QuestionPackageAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class ParticipantController extends Controller
 {
@@ -52,12 +53,81 @@ class ParticipantController extends Controller
             ->paginate($request->integer('per_page', 10));
     }
 
-    public function show(User $participant)
+    public function show(Request $request, User $participant)
     {
         abort_unless($participant->role === 'peserta', 404);
-        $regs = ExamRegistration::where('user_id', $participant->id)->with('schedule')->get();
+        $regs = ExamRegistration::query()
+            ->where('user_id', $participant->id)
+            ->with(['schedule.partner', 'certificate'])
+            ->get();
 
-        return ['participant' => $participant, 'schedules' => $regs->map(fn ($r) => ['schedule_id' => $r->schedule_id, 'date' => $r->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $r->schedule->start_at->format('H:i:s'), 'end_time' => $r->schedule->end_at->format('H:i:s'), 'status_jadwal' => $r->schedule->status, 'participant_status' => $r->status, 'attempt_id' => ExamAttempt::where('user_id', $participant->id)->where('schedule_id', $r->schedule_id)->value('id'), 'accessed_at' => null, 'finished_at' => null, 'assigned_at' => $r->registered_at?->toISOString(), 'capacity' => $r->schedule->quota, 'current_participants' => $r->schedule->registrations()->count()]), 'total_schedules' => $regs->count()];
+        $participantPayload = [
+            'id' => $participant->id,
+            'name' => $participant->name,
+            'email' => $participant->email,
+            'email_verified_at' => $participant->email_verified_at?->toISOString(),
+            'role' => $participant->role,
+            'is_active' => (bool) $participant->is_active,
+            'id_type' => $participant->id_type,
+            'id_image_path' => $participant->id_image_path,
+            'id_image_url' => $participant->id_image_path
+                ? $request->getSchemeAndHttpHost().Storage::url($participant->id_image_path)
+                : null,
+            'birth_date' => $participant->birth_date?->toDateString(),
+            'phone' => $participant->phone,
+            'profile_completed_at' => $participant->profile_completed_at?->toISOString(),
+            'created_at' => $participant->created_at?->toISOString(),
+            'updated_at' => $participant->updated_at?->toISOString(),
+        ];
+
+        $scheduleItems = $regs->map(function (ExamRegistration $registration) use ($participant) {
+            $schedule = $registration->schedule;
+            $attempt = ExamAttempt::query()
+                ->where('user_id', $participant->id)
+                ->where('schedule_id', $registration->schedule_id)
+                ->latest()
+                ->first();
+            $payment = $this->resolvedPayment($registration);
+            $isPartnerSchedule = (bool) ($schedule->is_partner || $schedule->partner_id);
+            $statusMeta = $this->adminParticipantStatusMeta($registration, $attempt, $isPartnerSchedule, $payment);
+
+            $certificate = $attempt && in_array($attempt->status, ['submitted', 'expired'], true)
+                ? $this->certificateData->fromRegistration($registration, true)
+                : null;
+
+            return [
+                'schedule_id' => $registration->schedule_id,
+                'date' => $schedule->start_at->format('Y-m-d H:i:s'),
+                'start_time' => $schedule->start_at->format('H:i:s'),
+                'end_time' => $schedule->end_at->format('H:i:s'),
+                'status_jadwal' => $this->scheduleWindowStatusLabel($schedule),
+                'attempt_id' => $attempt?->id,
+                'is_partner' => $isPartnerSchedule,
+                'partner' => $schedule->partner ? [
+                    'id' => $schedule->partner->id,
+                    'name' => $schedule->partner->name,
+                ] : null,
+                'participant_status' => $statusMeta['label'],
+                'participant_status_variant' => $statusMeta['variant'],
+                'accessed_at' => $attempt?->started_at?->toISOString(),
+                'finished_at' => $attempt?->submitted_at?->toISOString(),
+                'assigned_at' => $registration->registered_at?->toISOString(),
+                'capacity' => $schedule->quota,
+                'current_participants' => $schedule->registrations()->count(),
+                'certificate' => $certificate ? [
+                    'certificate_no' => $certificate['certificate_no'] ?? null,
+                    'verify_url' => $certificate['verify_url'] ?? null,
+                    'download_url' => $certificate['download_url'] ?? null,
+                    'public_pdf_url' => $certificate['public_pdf_url'] ?? null,
+                ] : null,
+            ];
+        })->values();
+
+        return [
+            'participant' => $participantPayload,
+            'schedules' => $scheduleItems,
+            'total_schedules' => $regs->count(),
+        ];
     }
 
     public function schedules(Request $request)
@@ -97,8 +167,11 @@ class ParticipantController extends Controller
 
         $user = $request->user();
         $free = (float) $schedule->price <= 0.0;
-        $existing = ExamRegistration::where('user_id', $user->id)->where('schedule_id', $schedule->id)->with('payment')->first();
+            $existing = ExamRegistration::where('user_id', $user->id)->where('schedule_id', $schedule->id)->with('payment')->first();
         if ($existing) {
+            if (! $existing->certificate_id && $schedule->certificate_id) {
+                $existing->update(['certificate_id' => $schedule->certificate_id]);
+            }
             if (! $existing->question_package_id) {
                 $existing->update([
                     'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
@@ -131,6 +204,7 @@ class ParticipantController extends Controller
                 'user_id' => $user->id,
                 'schedule_id' => $schedule->id,
                 'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
+                'certificate_id' => $schedule->certificate_id,
                 'status' => 'approved',
                 'access_status' => 'unlocked',
                 'registration_source' => 'self',
@@ -144,6 +218,7 @@ class ParticipantController extends Controller
             'user_id' => $user->id,
             'schedule_id' => $schedule->id,
             'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
+            'certificate_id' => $schedule->certificate_id,
             'status' => 'pending_payment',
             'access_status' => 'locked',
             'registration_source' => 'self',
@@ -261,6 +336,49 @@ class ParticipantController extends Controller
         }
 
         return 'sedang-berlangsung';
+    }
+
+    private function scheduleWindowStatusLabel(Schedule $schedule): string
+    {
+        if (now()->lt($schedule->start_at)) {
+            return 'Belum Dimulai';
+        }
+
+        if (now()->gte($schedule->end_at)) {
+            return 'Selesai';
+        }
+
+        return 'Sedang Berlangsung';
+    }
+
+    private function adminParticipantStatusMeta(ExamRegistration $registration, ?ExamAttempt $attempt, bool $isPartnerSchedule, ?Payment $payment): array
+    {
+        $terminationReason = strtolower((string) ($attempt?->metadata['termination_reason'] ?? ''));
+        if ($attempt?->status === 'in_progress') {
+            return ['label' => 'Sedang melaksanakan ujian', 'variant' => 'warning'];
+        }
+
+        if ($terminationReason === 'violation') {
+            return ['label' => 'Selesai dengan pelanggaran', 'variant' => 'warning'];
+        }
+
+        if ($attempt && in_array($attempt->status, ['submitted', 'expired'], true)) {
+            return ['label' => 'Selesai', 'variant' => 'success'];
+        }
+
+        if ($isPartnerSchedule) {
+            return $registration->user?->email_verified_at
+                ? ['label' => 'Telah konfirmasi email', 'variant' => 'success']
+                : ['label' => 'Belum konfirmasi email', 'variant' => 'warning'];
+        }
+
+        return (
+            $registration->access_status === 'unlocked'
+            || $registration->status === 'approved'
+            || $this->isPaidPayment($payment)
+        )
+            ? ['label' => 'Telah melakukan pembayaran', 'variant' => 'success']
+            : ['label' => 'Belum melakukan pembayaran', 'variant' => 'warning'];
     }
 
     private function resolvedPayment(ExamRegistration $registration): ?Payment

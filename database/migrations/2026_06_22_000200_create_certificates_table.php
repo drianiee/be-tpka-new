@@ -33,10 +33,18 @@ return new class extends Migration
             $table->string('certificate_file_path')->nullable()->after('certificate_issued_at');
             $table->timestamp('certificate_revoked_at')->nullable()->after('certificate_file_path');
         });
+
+        Schema::table('schedules', function (Blueprint $table) {
+            $table->foreignId('certificate_id')->nullable()->after('partner_id')->constrained('certificates')->nullOnDelete();
+        });
     }
 
     public function down(): void
     {
+        Schema::table('schedules', function (Blueprint $table) {
+            $table->dropConstrainedForeignId('certificate_id');
+        });
+
         Schema::table('exam_registrations', function (Blueprint $table) {
             $table->dropConstrainedForeignId('certificate_id');
             $table->dropUnique(['certificate_no']);

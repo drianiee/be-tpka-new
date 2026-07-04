@@ -12,6 +12,8 @@ class CertificateAssignmentService
 
     public function assignToRegistration(ExamRegistration $registration, ?Certificate $template = null): ExamRegistration
     {
+        $registration->loadMissing(['schedule.certificate']);
+
         if (
             $registration->certificate_id
             && $registration->certificate_no
@@ -21,7 +23,9 @@ class CertificateAssignmentService
             return $registration;
         }
 
-        $template ??= $this->templates->active();
+        $template ??= $registration->certificate
+            ?? $registration->schedule?->certificate
+            ?? $this->templates->active();
         if (! $template) {
             return $registration;
         }

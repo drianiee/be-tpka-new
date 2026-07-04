@@ -10,6 +10,7 @@ use App\Models\Payment;
 use App\Models\Partner;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
+use App\Services\CertificateTemplateService;
 use App\Services\CertificateDataService;
 use App\Services\ExamAttemptService;
 use App\Services\PartnerInvitationService;
@@ -27,6 +28,7 @@ class ScheduleController extends Controller
         private ExamAttemptService $examAttemptService,
         private QuestionPackageAssignmentService $packageAssignments,
         private CertificateDataService $certificateData,
+        private CertificateTemplateService $certificateTemplates,
     ) {}
 
     public function index(Request $request)
@@ -53,7 +55,11 @@ class ScheduleController extends Controller
 
     public function store(StoreScheduleRequest $request)
     {
-        $schedule = Schedule::create([...$this->scheduleData($request->validated(), true), 'created_by' => $request->user()->id]);
+        $schedule = Schedule::create([
+            ...$this->scheduleData($request->validated(), true),
+            'created_by' => $request->user()->id,
+            'certificate_id' => $this->certificateTemplates->active()?->id,
+        ]);
 
         return response()->json(['message' => 'Jadwal dibuat.', 'data' => $this->legacy($schedule->load('package'))], 201);
     }

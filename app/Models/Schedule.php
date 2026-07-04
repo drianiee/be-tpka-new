@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Schedule extends Model
 {
-    protected $fillable = ['question_package_id', 'partner_id', 'title', 'description', 'start_at', 'end_at', 'registration_start_at', 'registration_end_at', 'price', 'quota', 'status', 'is_partner', 'created_by'];
+    protected $fillable = ['question_package_id', 'partner_id', 'certificate_id', 'title', 'description', 'start_at', 'end_at', 'registration_start_at', 'registration_end_at', 'price', 'quota', 'status', 'is_partner', 'created_by'];
 
     protected function casts(): array
     {
@@ -39,5 +39,10 @@ class Schedule extends Model
     public function partner()
     {
         return $this->belongsTo(Partner::class);
+    }
+
+    public function certificate()
+    {
+        return $this->belongsTo(Certificate::class);
     }
 }
