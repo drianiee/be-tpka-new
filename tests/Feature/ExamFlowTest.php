@@ -6,6 +6,7 @@ use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\ExamScore;
 use App\Models\ExamSection;
+use App\Models\Certificate;
 use App\Models\Payment;
 use App\Models\Question;
 use App\Models\QuestionOption;
@@ -15,6 +16,7 @@ use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ExamFlowTest extends TestCase
@@ -74,9 +76,14 @@ class ExamFlowTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.0.scores.verbal', 2)
             ->assertJsonPath('data.0.scores.total', 202)
-            ->assertJsonPath('data.0.certificate.certificate_no', "TPA-{$schedule->start_at->year}-".str_pad((string) $attemptId, 6, '0', STR_PAD_LEFT));
+            ->assertJsonPath('data.0.certificate.certificate_no', 'TPA/'.$schedule->id.'/'.str_pad((string) ExamRegistration::where('schedule_id', $schedule->id)->where('user_id', $participant->id)->value('id'), 6, '0', STR_PAD_LEFT));
 
-        $this->getJson('/api/certificates/data/'.$scores->json('data.0.certificate.certificate_no'))
+        $verifyUrl = $scores->json('data.0.certificate.verify_url');
+        $verifyParts = parse_url($verifyUrl);
+        parse_str($verifyParts['query'] ?? '', $verifyQuery);
+        $uuid = basename($verifyParts['path'] ?? '');
+
+        $this->getJson('/api/certificates/data/'.$uuid.'?h='.($verifyQuery['h'] ?? ''))
             ->assertOk()
             ->assertJsonPath('data.participant_email', 'peserta@tpka.com');
 
@@ -122,6 +129,48 @@ class ExamFlowTest extends TestCase
             ->assertJsonPath('data.0.score_total', 202)
             ->assertJsonPath('data.0.scores.verbal', 2)
             ->assertJsonPath('data.0.scores.total', 202);
+    }
+
+    public function test_certificate_download_is_idempotent_and_blocks_retake_after_issue(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $admin = User::where('role', 'administrator')->firstOrFail();
+        $schedule = $this->createExamFixture($participant);
+
+        $login = $this->postJson('/api/auth/login', ['email' => 'peserta@tpka.com', 'password' => 'password'])
+            ->assertOk();
+        $headers = ['Authorization' => 'Bearer '.$login->json('token')];
+
+        $attempt = $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
+            ->assertSuccessful();
+        $questionId = $attempt->json('questions.0.id');
+        $correctOptionId = QuestionOption::where('question_id', $questionId)
+            ->where('is_correct', true)
+            ->value('id');
+
+        $this->putJson("/api/participant/attempts/{$attempt->json('id')}/answers/{$questionId}", [
+            'question_option_id' => $correctOptionId,
+        ], $headers)->assertOk();
+        $this->postJson("/api/participant/attempts/{$attempt->json('id')}/submit", [], $headers)->assertOk();
+
+        $registration = ExamRegistration::where('user_id', $participant->id)->where('schedule_id', $schedule->id)->firstOrFail();
+        $this->get("/api/participant/certificate-downloads/{$registration->id}", $headers)
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+
+        $issued = $registration->fresh();
+        $this->assertNotNull($issued->certificate_issued_at);
+        $this->assertNotNull($issued->certificate_file_path);
+
+        $this->get("/api/participant/certificate-downloads/{$registration->id}", $headers)
+            ->assertOk();
+        $this->assertSame($issued->certificate_file_path, $registration->fresh()->certificate_file_path);
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/schedules/{$schedule->id}/participants/{$participant->id}/retake")
+            ->assertStatus(422)
+            ->assertJsonPath('errors.certificate.0', 'Peserta tidak dapat mengulang tes karena sertifikat sudah pernah diterbitkan.');
     }
 
     public function test_participant_cannot_start_unregistered_schedule(): void
@@ -351,6 +400,7 @@ class ExamFlowTest extends TestCase
     private function createExamFixture(User $participant): Schedule
     {
         $admin = User::where('role', 'administrator')->firstOrFail();
+        $this->createCertificateTemplate();
         $package = QuestionPackage::create([
             'name' => 'Paket TPA Test',
             'description' => 'Fixture internal untuk test exam engine.',
@@ -417,5 +467,33 @@ class ExamFlowTest extends TestCase
         ]);
 
         return $schedule;
+    }
+
+    private function createCertificateTemplate(): Certificate
+    {
+        $path = 'certificates/test-template.png';
+        Storage::disk('public')->put($path, base64_decode('iVBORw0KGgoAAAANSUhEUgAAB4AAAAV4CAIAAAA4xSjbAAAAGXRFWHRTb2Z0d2FyZQBwYWludC5uZXQgNC4wLjEyQm9YSQAAABNJREFUeJztwTEBAAAAwqD1T20ND6AAAAAAAAAAAAAAAPg1fgABtQAB2gAAAABJRU5ErkJggg=='));
+
+        return Certificate::firstOrCreate(
+            ['name' => 'Template Test'],
+            [
+                'period' => 'I',
+                'year' => 2026,
+                'sign_name' => 'Direktur',
+                'sign_nip' => '123',
+                'letter_prefix' => 'TPA',
+                'template_file' => $path,
+                'layout_json' => [
+                    'canvas' => ['width' => 1200, 'height' => 850],
+                    'fields' => [
+                        'participant_name' => ['x' => 100, 'y' => 100, 'fontSize' => 32, 'align' => 'left'],
+                        'certificate_no' => ['x' => 100, 'y' => 150, 'fontSize' => 20, 'align' => 'left'],
+                        'score_total' => ['x' => 100, 'y' => 200, 'fontSize' => 20, 'align' => 'left'],
+                        'qr_code' => ['x' => 900, 'y' => 600, 'size' => 160],
+                    ],
+                ],
+                'is_active' => true,
+            ]
+        );
     }
 }

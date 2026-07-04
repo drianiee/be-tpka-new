@@ -8,6 +8,7 @@ use App\Models\ExamRegistration;
 use App\Models\Payment;
 use App\Models\Schedule;
 use App\Models\User;
+use App\Services\CertificateAssignmentService;
 use App\Services\CertificateDataService;
 use App\Services\ExamAttemptService;
 use App\Services\MidtransService;
@@ -20,6 +21,7 @@ class ParticipantController extends Controller
 {
     public function __construct(
         private CertificateDataService $certificateData,
+        private CertificateAssignmentService $certificates,
         private MidtransService $midtrans,
         private ExamAttemptService $examAttemptService,
         private QuestionPackageAssignmentService $packageAssignments,
@@ -27,7 +29,27 @@ class ParticipantController extends Controller
 
     public function index(Request $request)
     {
-        return User::where('role', 'peserta')->when($request->filled('q'), fn ($q) => $q->where(fn ($x) => $x->where('name', 'like', '%'.$request->q.'%')->orWhere('email', 'like', '%'.$request->q.'%')))->paginate($request->integer('per_page', 10));
+        return User::query()
+            ->where('role', 'peserta')
+            ->when($request->filled('q'), function ($q) use ($request) {
+                $term = trim((string) $request->string('q'));
+
+                $q->where(function ($inner) use ($term) {
+                    $inner
+                        ->where('name', 'like', '%'.$term.'%')
+                        ->orWhere('email', 'like', '%'.$term.'%');
+                });
+            })
+            ->when($request->has('verified') && $request->get('verified') !== null && $request->get('verified') !== '', function ($q) use ($request) {
+                $verified = filter_var($request->get('verified'), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+
+                if ($verified === true) {
+                    $q->whereNotNull('email_verified_at');
+                } elseif ($verified === false) {
+                    $q->whereNull('email_verified_at');
+                }
+            })
+            ->paginate($request->integer('per_page', 10));
     }
 
     public function show(User $participant)
@@ -38,9 +60,27 @@ class ParticipantController extends Controller
         return ['participant' => $participant, 'schedules' => $regs->map(fn ($r) => ['schedule_id' => $r->schedule_id, 'date' => $r->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $r->schedule->start_at->format('H:i:s'), 'end_time' => $r->schedule->end_at->format('H:i:s'), 'status_jadwal' => $r->schedule->status, 'participant_status' => $r->status, 'attempt_id' => ExamAttempt::where('user_id', $participant->id)->where('schedule_id', $r->schedule_id)->value('id'), 'accessed_at' => null, 'finished_at' => null, 'assigned_at' => $r->registered_at?->toISOString(), 'capacity' => $r->schedule->quota, 'current_participants' => $r->schedule->registrations()->count()]), 'total_schedules' => $regs->count()];
     }
 
-    public function schedules()
+    public function schedules(Request $request)
     {
-        return Schedule::where('status', 'published')->where(fn ($q) => $q->whereNull('partner_id')->where('is_partner', false))->where(fn ($q) => $q->whereNull('registration_start_at')->orWhere('registration_start_at', '<=', now()))->where(fn ($q) => $q->whereNull('registration_end_at')->orWhere('registration_end_at', '>=', now()))->withCount('registrations')->orderBy('start_at')->get()->map(fn ($s) => ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'price' => (string) $s->price, 'capacity' => $s->quota, 'current_participants' => $s->registrations_count, 'registration_status' => 'available', 'status' => $s->status]);
+        return Schedule::where('status', 'published')
+            ->where(fn ($q) => $q->whereNull('partner_id')->where('is_partner', false))
+            ->where(fn ($q) => $q->whereNull('registration_start_at')->orWhere('registration_start_at', '<=', now()))
+            ->where(fn ($q) => $q->whereNull('registration_end_at')->orWhere('registration_end_at', '>=', now()))
+            ->whereDoesntHave('registrations', fn ($q) => $q->where('user_id', $request->user()->id))
+            ->withCount('registrations')
+            ->orderBy('start_at')
+            ->get()
+            ->map(fn ($s) => [
+                'id' => $s->id,
+                'title' => $s->title,
+                'date' => $s->start_at->format('Y-m-d H:i:s'),
+                'start_time' => $s->start_at->format('H:i:s'),
+                'price' => (string) $s->price,
+                'capacity' => $s->quota,
+                'current_participants' => $s->registrations_count,
+                'registration_status' => 'available',
+                'status' => $s->status,
+            ]);
     }
 
     public function register(Request $request, Schedule $schedule)
@@ -117,9 +157,25 @@ class ParticipantController extends Controller
 
     public function mySchedules(Request $request)
     {
-        $regs = ExamRegistration::where('user_id', $request->user()->id)->with(['schedule.package', 'schedule.partner', 'package', 'payment', 'payments'])->get();
+        $status = strtolower(trim((string) $request->get('status', 'all')));
 
-        return ['status' => $request->get('status', 'all'), 'count' => $regs->count(), 'data' => $regs->map(fn ($r) => $this->myScheduleData($r, $request->user()->id))];
+        $regs = ExamRegistration::where('user_id', $request->user()->id)
+            ->with(['schedule.package', 'schedule.partner', 'package', 'payment', 'payments'])
+            ->get()
+            ->filter(function (ExamRegistration $registration) use ($status) {
+                if ($status === '' || $status === 'all') {
+                    return true;
+                }
+
+                return $this->participantScheduleStatusKey($registration) === $status;
+            })
+            ->values();
+
+        return [
+            'status' => $request->get('status', 'all'),
+            'count' => $regs->count(),
+            'data' => $regs->map(fn ($r) => $this->myScheduleData($r, $request->user()->id)),
+        ];
     }
 
     public function mySchedule(Request $request, Schedule $schedule)
@@ -166,12 +222,45 @@ class ParticipantController extends Controller
         $displayPackage = $assignedPackage ?: $s->package;
         $activeAttempt = $attempt && $attempt->status === 'in_progress' ? $attempt : null;
         $completedAttempt = $attempt && in_array($attempt->status, ['submitted', 'expired'], true);
+        $completedAttemptData = $completedAttempt
+            ? $this->examAttemptService
+                ->recalculateCompletedAttempt($attempt)
+                ->loadMissing(['scores', 'package.sections'])
+            : null;
+        $certificate = $completedAttempt ? $this->certificateData->fromRegistration($r) : null;
         $canStart = $r->access_status === 'unlocked'
             && $s->status === 'published'
             && (! $completedAttempt || $retakePending)
             && ($retakePending || now()->between($s->start_at, $s->end_at));
 
-        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source, 'retake_granted_at' => $r->retake_granted_at?->toISOString(), 'retake_consumed_at' => $r->retake_consumed_at?->toISOString()], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $canStart, 'has_attempt' => (bool) $activeAttempt, 'attempt_id' => $activeAttempt?->id, 'attempt_status' => $activeAttempt?->status ?? $attempt?->status, 'question_package' => $displayPackage ? ['id' => $displayPackage->id, 'name' => $displayPackage->name, 'total_duration_minutes' => $displayPackage->total_duration_minutes, 'total_questions' => $displayPackage->total_questions] : null];
+        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source, 'retake_granted_at' => $r->retake_granted_at?->toISOString(), 'retake_consumed_at' => $r->retake_consumed_at?->toISOString()], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $canStart, 'has_attempt' => (bool) $activeAttempt, 'attempt_id' => $activeAttempt?->id, 'attempt_status' => $activeAttempt?->status ?? $attempt?->status, 'question_package' => $displayPackage ? ['id' => $displayPackage->id, 'name' => $displayPackage->name, 'total_duration_minutes' => $displayPackage->total_duration_minutes, 'total_questions' => $displayPackage->total_questions] : null, 'scores' => $completedAttemptData ? $this->sectionScoresPayload($completedAttemptData) : null, 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url'], 'public_pdf_url' => $certificate['public_pdf_url'] ?? null] : null];
+    }
+
+    private function participantScheduleStatusKey(ExamRegistration $registration): string
+    {
+        $schedule = $registration->schedule;
+        $attemptStatus = strtolower((string) ExamAttempt::where('user_id', $registration->user_id)
+            ->where('schedule_id', $registration->schedule_id)
+            ->latest()
+            ->value('status'));
+
+        if ($attemptStatus === 'in_progress') {
+            return 'sedang-berlangsung';
+        }
+
+        if (in_array($attemptStatus, ['submitted', 'expired'], true)) {
+            return 'telah-selesai';
+        }
+
+        if (now()->lt($schedule->start_at)) {
+            return 'belum-dimulai';
+        }
+
+        if (now()->gte($schedule->end_at)) {
+            return 'telah-selesai';
+        }
+
+        return 'sedang-berlangsung';
     }
 
     private function resolvedPayment(ExamRegistration $registration): ?Payment
@@ -292,6 +381,7 @@ class ParticipantController extends Controller
 
     private function registrationResponse(string $message, ExamRegistration $registration, ?Payment $payment): array
     {
+        $registration = $this->certificates->assignToRegistration($registration);
         $schedule = $registration->schedule()->with('package')->firstOrFail();
         $package = $registration->package()->first() ?: $schedule->package;
 
@@ -316,7 +406,15 @@ class ParticipantController extends Controller
 
     private function scoreData(ExamAttempt $a): array
     {
-        $scoresBySectionId = $a->scores->keyBy('exam_section_id');
+        $sectionScores = $this->sectionScoresPayload($a);
+        $certificate = $a->scores->isNotEmpty() ? $this->certificateData->payload($a) : null;
+
+        return ['id' => $a->id, 'date' => $a->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $a->schedule->start_at->format('H:i:s'), 'end_time' => $a->schedule->end_at->format('H:i:s'), 'status' => $a->status, 'partner' => null, 'score_total' => (float) $a->score_total, 'score_breakdown' => $a->score_breakdown, 'scores' => [...$sectionScores, 'total' => (float) $a->score_total], 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url']] : null];
+    }
+
+    private function sectionScoresPayload(ExamAttempt $attempt): array
+    {
+        $scoresBySectionId = $attempt->scores->keyBy('exam_section_id');
         $sectionScores = [
             'verbal' => 0.0,
             'kuantitatif' => 0.0,
@@ -324,7 +422,7 @@ class ParticipantController extends Controller
             'spasial' => 0.0,
         ];
 
-        foreach (($a->package?->sections ?? collect())->sortBy('order_number') as $section) {
+        foreach (($attempt->package?->sections ?? collect())->sortBy('order_number') as $section) {
             $code = strtolower((string) ($section->code ?? ''));
             if (! array_key_exists($code, $sectionScores)) {
                 continue;
@@ -333,8 +431,6 @@ class ParticipantController extends Controller
             $sectionScores[$code] = (float) ($scoresBySectionId->get($section->id)?->final_score ?? 0);
         }
 
-        $certificate = $a->scores->isNotEmpty() ? $this->certificateData->payload($a) : null;
-
-        return ['id' => $a->id, 'date' => $a->schedule->start_at->format('Y-m-d H:i:s'), 'start_time' => $a->schedule->start_at->format('H:i:s'), 'end_time' => $a->schedule->end_at->format('H:i:s'), 'status' => $a->status, 'partner' => null, 'score_total' => (float) $a->score_total, 'score_breakdown' => $a->score_breakdown, 'scores' => [...$sectionScores, 'total' => (float) $a->score_total], 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url']] : null];
+        return [...$sectionScores, 'total' => (float) ($attempt->score_total ?? 0)];
     }
 }

@@ -10,6 +10,7 @@ use App\Models\Payment;
 use App\Models\Partner;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
+use App\Services\CertificateDataService;
 use App\Services\ExamAttemptService;
 use App\Services\PartnerInvitationService;
 use App\Services\QuestionPackageAssignmentService;
@@ -25,6 +26,7 @@ class ScheduleController extends Controller
     public function __construct(
         private ExamAttemptService $examAttemptService,
         private QuestionPackageAssignmentService $packageAssignments,
+        private CertificateDataService $certificateData,
     ) {}
 
     public function index(Request $request)
@@ -340,8 +342,11 @@ class ScheduleController extends Controller
             $payment = $this->resolvedRegistrationPayment($r);
             $statusMeta = $this->participantStatusMeta($r, $attempt, $isPartnerSchedule, $payment);
             $package = $r->package;
+            $hasCompletedAttempt = $attempt && in_array($attempt->status, ['submitted', 'expired'], true);
+            $certificate = $hasCompletedAttempt ? $this->certificateData->fromRegistration($r, true) : null;
 
             return [
+                'registration_id' => $r->id,
                 'id' => $r->user_id,
                 'name' => $r->user?->name,
                 'email' => $r->user?->email,
@@ -353,7 +358,11 @@ class ScheduleController extends Controller
                 'email_verified_at' => $r->user?->email_verified_at?->toISOString(),
                 'question_package' => $package ? ['id' => $package->id, 'name' => $package->name] : null,
                 'scores' => $attempt ? $this->sectionScores($attempt) : null,
-                'certificate_download_url' => null,
+                'certificate_no' => $r->certificate_no,
+                'certificate_issued_at' => $r->certificate_issued_at?->toISOString(),
+                'certificate_revoked_at' => $r->certificate_revoked_at?->toISOString(),
+                'certificate_download_url' => $certificate['download_url'] ?? null,
+                'can_retake' => ! $r->certificate_issued_at,
             ];
         })->values(), 'current_page' => $participantPage?->currentPage() ?? 1, 'last_page' => $participantPage?->lastPage() ?? 1, 'per_page' => $participantPage?->perPage() ?? 100, 'total' => $participantPage?->total() ?? $s->registrations()->count(), 'from' => $participantPage?->firstItem(), 'to' => $participantPage?->lastItem()]];
     }
@@ -746,7 +755,8 @@ XML;
         ]));
 
         $data['question_package_id'] = ! empty($data['question_package_id']) ? $package->id : null;
-        $data['registration_end_at'] = Carbon::parse($data['start_at'])->subMinutes(0);
+        $registrationCloseOffset = max(0, (int) env('REGISTRATION_CLOSE_OFFSET_MINUTES'));
+        $data['registration_end_at'] = Carbon::parse($data['start_at'])->subMinutes($registrationCloseOffset);
         if (empty($data['end_at'])) {
             $data['end_at'] = Carbon::parse($data['start_at'])->addMinutes((int) $package->total_duration_minutes);
         }

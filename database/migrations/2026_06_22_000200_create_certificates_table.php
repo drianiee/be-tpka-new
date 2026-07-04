@@ -11,20 +11,45 @@ return new class extends Migration
         Schema::create('certificates', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('period');
+            $table->string('period')->nullable();
             $table->unsignedInteger('year');
-            $table->string('sign_name');
-            $table->string('sign_nip');
+            $table->string('sign_name')->nullable();
+            $table->string('sign_nip')->nullable();
             $table->string('letter_prefix');
-            $table->string('template_path');
+            $table->string('template_file');
+            $table->string('sign_file')->nullable();
+            $table->string('stamp_file')->nullable();
             $table->json('layout_json')->nullable();
             $table->boolean('is_active')->default(false);
             $table->timestamps();
+        });
+
+        Schema::table('exam_registrations', function (Blueprint $table) {
+            $table->foreignId('certificate_id')->nullable()->after('payment_id')->constrained('certificates')->nullOnDelete();
+            $table->string('certificate_no')->nullable()->after('retake_consumed_at')->unique();
+            $table->uuid('certificate_verify_uuid')->nullable()->after('certificate_no')->unique();
+            $table->string('certificate_verify_hash', 64)->nullable()->after('certificate_verify_uuid');
+            $table->timestamp('certificate_issued_at')->nullable()->after('certificate_verify_hash');
+            $table->string('certificate_file_path')->nullable()->after('certificate_issued_at');
+            $table->timestamp('certificate_revoked_at')->nullable()->after('certificate_file_path');
         });
     }
 
     public function down(): void
     {
+        Schema::table('exam_registrations', function (Blueprint $table) {
+            $table->dropConstrainedForeignId('certificate_id');
+            $table->dropUnique(['certificate_no']);
+            $table->dropUnique(['certificate_verify_uuid']);
+            $table->dropColumn([
+                'certificate_no',
+                'certificate_verify_uuid',
+                'certificate_verify_hash',
+                'certificate_issued_at',
+                'certificate_file_path',
+                'certificate_revoked_at',
+            ]);
+        });
         Schema::dropIfExists('certificates');
     }
 };

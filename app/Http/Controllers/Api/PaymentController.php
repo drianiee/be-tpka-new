@@ -17,6 +17,36 @@ class PaymentController extends Controller
         $paidStatuses = ['settlement', 'capture', 'paid'];
         $failedStatuses = ['deny', 'cancel', 'expire', 'failure'];
 
+        $query
+            ->when($request->filled('q'), function ($q) use ($request) {
+                $term = trim((string) $request->string('q'));
+
+                $q->where(function ($inner) use ($term) {
+                    $inner
+                        ->where('order_id', 'like', "%{$term}%")
+                        ->orWhere('transaction_id', 'like', "%{$term}%")
+                        ->orWhere('payment_type', 'like', "%{$term}%")
+                        ->orWhere('transaction_status', 'like', "%{$term}%")
+                        ->orWhereHas('user', function ($userQuery) use ($term) {
+                            $userQuery
+                                ->where('name', 'like', "%{$term}%")
+                                ->orWhere('email', 'like', "%{$term}%");
+                        })
+                        ->orWhereHas('schedule', function ($scheduleQuery) use ($term) {
+                            $scheduleQuery->where('title', 'like', "%{$term}%");
+                        });
+                });
+            })
+            ->when($request->filled('status'), function ($q) use ($request) {
+                $q->where('transaction_status', (string) $request->string('status'));
+            })
+            ->when($request->filled('from'), function ($q) use ($request) {
+                $q->whereDate('created_at', '>=', (string) $request->string('from'));
+            })
+            ->when($request->filled('to'), function ($q) use ($request) {
+                $q->whereDate('created_at', '<=', (string) $request->string('to'));
+            });
+
         return [
             'summary' => [
                 'income_paid_total' => (float) Payment::whereIn('transaction_status', $paidStatuses)->sum('amount'),
@@ -49,6 +79,10 @@ class PaymentController extends Controller
 
     public function sync(Request $request, MidtransService $midtrans)
     {
+        if ($request->user() && $request->user()->role === 'peserta') {
+            abort(403, 'Sinkronisasi pembayaran peserta hanya diproses melalui callback Midtrans.');
+        }
+
         $data = $request->validate([
             'order_id' => ['required', 'string'],
         ]);

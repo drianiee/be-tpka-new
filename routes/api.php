@@ -27,6 +27,8 @@ Route::prefix('auth')->group(function () {
 Route::get('schedules/upcoming', [ScheduleController::class, 'upcoming']);
 Route::get('certificates/data/{uuid}', [CertificateController::class, 'data']);
 Route::get('certificates/pdf/{uuid}', [CertificateController::class, 'pdf']);
+Route::get('certificates/pdf-inline/{uuid}', [CertificateController::class, 'pdfInline']);
+Route::get('certificates/preview/{uuid}.png', [CertificateController::class, 'previewPng']);
 Route::get('partner/onboarding/preview', [PartnerOnboardingController::class, 'preview']);
 Route::post('partner/onboarding/claim', [PartnerOnboardingController::class, 'claim']);
 Route::post('payments/midtrans/callback', [PaymentController::class, 'callback']);
@@ -66,7 +68,24 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('participants', [ParticipantController::class, 'index']);
         Route::get('participants/{participant}', [ParticipantController::class, 'show']);
 
-        Route::get('partners', fn (Request $r) => Partner::paginate($r->integer('per_page', 10)));
+        Route::get('partners', function (Request $request) {
+            $query = Partner::query();
+
+            if ($request->filled('q')) {
+                $term = trim((string) $request->string('q'));
+                $query->where(function ($builder) use ($term) {
+                    $builder
+                        ->where('name', 'like', '%'.$term.'%')
+                        ->orWhere('contact_name', 'like', '%'.$term.'%')
+                        ->orWhere('contact_email', 'like', '%'.$term.'%')
+                        ->orWhere('contact_phone', 'like', '%'.$term.'%');
+                });
+            }
+
+            return $query
+                ->latest('id')
+                ->paginate($request->integer('per_page', 10));
+        });
         Route::get('partners/{partner}/schedules/export', [ScheduleController::class, 'exportPartnerSchedules']);
         Route::post('partners', function (Request $r) {
             $data = $r->validate([
@@ -151,6 +170,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('schedules/{schedule}/scores', fn (Schedule $schedule) => ExamAttempt::whereBelongsTo($schedule)->whereIn('status', ['submitted', 'expired'])->with(['scores', 'user'])->get());
             Route::get('certificates', [CertificateController::class, 'index']);
             Route::post('certificates', [CertificateController::class, 'store']);
+            Route::get('certificates/registrations/{registration}/download', [CertificateController::class, 'downloadRegistration']);
+            Route::patch('certificates/registrations/{registration}/revoke', [CertificateController::class, 'revokeRegistration']);
             Route::get('certificates/{certificate}', [CertificateController::class, 'show']);
             Route::put('certificates/{certificate}', [CertificateController::class, 'update']);
             Route::put('certificates/{certificate}/layout', [CertificateController::class, 'layout']);
@@ -186,6 +207,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('scores', [ParticipantController::class, 'scores']);
         Route::get('scores/{attempt}', [ParticipantController::class, 'score']);
         Route::get('certificates', fn () => ['data' => []]);
+        Route::get('certificate-downloads/{registration}', [CertificateController::class, 'downloadOwnRegistration']);
+        Route::get('certificates/{registration}/download', [CertificateController::class, 'downloadOwnRegistration']);
         Route::get('certificates/{attempt}', [ParticipantController::class, 'score']);
     });
 

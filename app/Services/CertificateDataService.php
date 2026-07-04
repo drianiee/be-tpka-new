@@ -2,81 +2,67 @@
 
 namespace App\Services;
 
-use App\Models\Certificate;
 use App\Models\ExamAttempt;
-use Illuminate\Support\Str;
+use App\Models\ExamRegistration;
 
 class CertificateDataService
 {
-    public function __construct(private ExamAttemptService $examAttemptService) {}
+    public function __construct(
+        private CertificateAssignmentService $assignment,
+        private CertificateScoreProvider $scores,
+        private CertificateVerificationService $verification,
+    ) {}
 
-    public function fromIdentifier(string $identifier): ?array
+    public function payload(ExamAttempt $attempt): ?array
     {
-        $attemptId = $this->attemptIdFromIdentifier($identifier);
-
-        if (! $attemptId) {
-            return null;
-        }
-
-        $attempt = ExamAttempt::with(['user', 'schedule', 'scores'])
-            ->whereKey($attemptId)
-            ->whereIn('status', ['submitted', 'expired'])
+        $registration = ExamRegistration::query()
+            ->where('user_id', $attempt->user_id)
+            ->where('schedule_id', $attempt->schedule_id)
+            ->with(['certificate', 'user', 'schedule'])
             ->first();
 
-        if (! $attempt || $attempt->scores->isEmpty()) {
+        if (! $registration) {
             return null;
         }
 
-        return $this->payload($attempt);
+        return $this->fromRegistration($registration);
     }
 
-    public function payload(ExamAttempt $attempt): array
+    public function fromRegistration(ExamRegistration $registration, bool $admin = false): ?array
     {
-        if (in_array($attempt->status, ['submitted', 'expired'], true)) {
-            $attempt = $this->examAttemptService->recalculateCompletedAttempt($attempt);
+        $registration = $this->assignment
+            ->assignToRegistration($registration)
+            ->loadMissing(['certificate', 'user', 'schedule']);
+
+        if (! $registration->certificate_verify_uuid || ! $registration->certificate_verify_hash) {
+            return null;
         }
 
-        $attempt->loadMissing(['user', 'schedule', 'scores']);
-        $template = Certificate::where('is_active', true)->latest()->first();
-        $year = (int) ($attempt->submitted_at ?? $attempt->schedule->end_at ?? now())->format('Y');
-        $prefix = $this->prefix($template?->letter_prefix ?? 'TPA');
-        $certificateNo = $this->certificateNumber($attempt, $prefix, $year);
+        $scores = [];
+        try {
+            $scores = $this->scores->scoresForRegistration($registration);
+        } catch (\Throwable) {
+            $scores = [];
+        }
 
         return [
-            'certificate_no' => $certificateNo,
-            'participant_name' => $attempt->user?->name,
-            'participant_email' => $attempt->user?->email,
-            'schedule_id' => $attempt->schedule_id,
-            'exam_date' => $attempt->schedule?->start_at?->format('Y-m-d'),
-            'certificate_name' => $template?->name ?? 'Sertifikat Tes Potensi Akademik',
-            'period' => $template?->period,
-            'year' => $template?->year ?? $year,
-            'score_total' => (float) $attempt->score_total,
-            'verify_url' => url("/certificates/verify/{$certificateNo}"),
-            'download_url' => url("/api/certificates/pdf/{$certificateNo}"),
+            ...$this->verification->metadata($registration),
+            'score_verbal' => (float) ($scores['verbal'] ?? 0),
+            'score_kuantitatif' => (float) ($scores['kuantitatif'] ?? 0),
+            'score_logika' => (float) ($scores['logika'] ?? 0),
+            'score_spasial' => (float) ($scores['spasial'] ?? 0),
+            'score_total' => (float) ($scores['total'] ?? 0),
+            'verify_url' => $this->frontendVerifyUrl($registration),
+            'download_url' => $admin
+                ? "/api/admin/certificates/registrations/{$registration->id}/download"
+                : "/api/participant/certificate-downloads/{$registration->id}",
+            'public_pdf_url' => "/api/certificates/pdf/{$registration->certificate_verify_uuid}?h={$registration->certificate_verify_hash}",
         ];
     }
 
-    private function certificateNumber(ExamAttempt $attempt, string $prefix, int $year): string
+    private function frontendVerifyUrl(ExamRegistration $registration): string
     {
-        return sprintf('%s-%d-%06d', $prefix, $year, $attempt->id);
-    }
-
-    private function attemptIdFromIdentifier(string $identifier): ?int
-    {
-        if (ctype_digit($identifier)) {
-            return (int) $identifier;
-        }
-
-        if (preg_match('/(\d+)$/', $identifier, $matches) !== 1) {
-            return null;
-        }
-
-        return (int) $matches[1];
-    }
-
-    private function prefix(string $prefix): string
-    {
-        return Str::of($prefix)->upper()->replaceMatches('/[^A-Z0-9]+/', '-')->trim('-')->value() ?: 'TPA';
+        return rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/')
+            ."/certificates/verify/{$registration->certificate_verify_uuid}?h={$registration->certificate_verify_hash}";
     }
 }

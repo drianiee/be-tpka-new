@@ -56,6 +56,30 @@ class MidtransPaymentTest extends TestCase
         $this->assertDatabaseCount('payments', 0);
     }
 
+    public function test_registered_schedule_is_hidden_from_participant_available_schedule_list(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $registeredSchedule = $this->createSchedule(0);
+        $availableSchedule = $this->createSchedule(0)->forceFill([
+            'start_at' => now()->addHours(4),
+            'end_at' => now()->addHours(6)->addMinutes(30),
+            'registration_start_at' => now()->subHour(),
+            'registration_end_at' => now()->addHours(3)->addMinutes(30),
+        ]);
+        $availableSchedule->save();
+
+        $this->actingAs($participant, 'sanctum')
+            ->postJson("/api/participant/schedules/{$registeredSchedule->id}/register")
+            ->assertSuccessful();
+
+        $this->actingAs($participant, 'sanctum')
+            ->getJson('/api/participant/schedules')
+            ->assertOk()
+            ->assertJsonMissing(['id' => $registeredSchedule->id])
+            ->assertJsonFragment(['id' => $availableSchedule->id]);
+    }
+
     public function test_paid_registration_waits_for_midtrans_callback_before_attempt_can_start(): void
     {
         $this->seed(DatabaseSeeder::class);
@@ -191,57 +215,35 @@ class MidtransPaymentTest extends TestCase
         $this->assertNotSame($firstPayment->order_id, Payment::latest('id')->firstOrFail()->order_id);
     }
 
-    public function test_finish_sync_updates_pending_payment_from_midtrans_status_api(): void
+    public function test_participant_cannot_unlock_payment_via_finish_sync_without_callback(): void
     {
         $this->seed(DatabaseSeeder::class);
         $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
-        $expectedAmount = 250000;
-        $schedule = $this->createSchedule($expectedAmount);
+        $schedule = $this->createSchedule(250000);
 
         $this->actingAs($participant, 'sanctum')
             ->postJson("/api/participant/schedules/{$schedule->id}/register")
             ->assertSuccessful()
-            ->assertJsonPath('registration.status', 'pending_payment')
-            ->assertJsonPath('payment.amount', $expectedAmount)
-            ->assertJsonPath('data.amount', $expectedAmount);
+            ->assertJsonPath('registration.status', 'pending_payment');
 
         $payment = Payment::firstOrFail();
-        $grossAmount = number_format((float) $payment->amount, 2, '.', '');
-        $midtrans = \Mockery::mock(MidtransService::class);
-        $midtrans->shouldReceive('status')
-            ->once()
-            ->with($payment->order_id)
-            ->andReturn([
-                'order_id' => $payment->order_id,
-                'transaction_id' => 'midtrans-sync-'.$payment->id,
-                'transaction_status' => 'settlement',
-                'status_code' => '200',
-                'gross_amount' => $grossAmount,
-                'payment_type' => 'bank_transfer',
-                'transaction_time' => now()->format('Y-m-d H:i:s'),
-                'settlement_time' => now()->format('Y-m-d H:i:s'),
-                'va_numbers' => [['bank' => 'bca', 'va_number' => '12345678901']],
-            ]);
-        $this->app->instance(MidtransService::class, $midtrans);
 
         $this->actingAs($participant, 'sanctum')
             ->postJson('/api/participant/payments/midtrans/sync', [
                 'order_id' => $payment->order_id,
             ])
-            ->assertOk()
-            ->assertJsonPath('payment.transaction_status', 'settlement')
-            ->assertJsonPath('registration.status', 'approved')
-            ->assertJsonPath('registration.access_status', 'unlocked');
+            ->assertForbidden()
+            ->assertJsonPath('message', 'Sinkronisasi pembayaran peserta hanya diproses melalui callback Midtrans.');
 
         $payment->refresh();
         $registration = ExamRegistration::where('user_id', $participant->id)
             ->where('schedule_id', $schedule->id)
             ->firstOrFail();
 
-        $this->assertSame('settlement', $payment->transaction_status);
-        $this->assertNotNull($payment->paid_at);
-        $this->assertSame('approved', $registration->status);
-        $this->assertSame('unlocked', $registration->access_status);
+        $this->assertSame('pending', $payment->transaction_status);
+        $this->assertNull($payment->paid_at);
+        $this->assertSame('pending_payment', $registration->status);
+        $this->assertSame('locked', $registration->access_status);
     }
 
     public function test_schedule_can_be_created_without_manual_package_selection(): void

@@ -18,7 +18,10 @@ use ZipArchive;
 
 class PartnerInvitationService
 {
-    public function __construct(private QuestionPackageAssignmentService $packageAssignments) {}
+    public function __construct(
+        private QuestionPackageAssignmentService $packageAssignments,
+        private CertificateAssignmentService $certificates,
+    ) {}
 
     public function registerManualParticipant(Schedule $schedule, User $actor, array $payload): array
     {
@@ -74,6 +77,7 @@ class PartnerInvitationService
             $registration->question_package_id = $this->packageAssignments->pickRandomPackage($schedule)->id;
         }
         $registration->save();
+        $registration = $this->certificates->assignToRegistration($registration);
 
         $sentInvitation = false;
         $sentConfirmation = false;

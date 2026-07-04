@@ -145,6 +145,9 @@ class QuestionBankTest extends TestCase
             'score' => 1,
             'options' => $this->answerOptions(),
         ], $adminHeaders)->assertCreated();
+        $this->patchJson("/api/question-packages/{$package->id}/status", [
+            'status' => 'published',
+        ], $adminHeaders)->assertOk();
 
         $schedule = Schedule::create([
             'question_package_id' => $package->id,
@@ -181,7 +184,6 @@ class QuestionBankTest extends TestCase
     {
         $id = $this->postJson('/api/question-packages', [
             'name' => 'Paket TPA Test',
-            'status' => 'draft',
             'total_duration_minutes' => 120,
         ], $headers)->assertCreated()->json('data.id');
 

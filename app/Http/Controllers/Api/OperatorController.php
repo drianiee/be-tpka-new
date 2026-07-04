@@ -10,7 +10,21 @@ class OperatorController extends Controller
 {
     public function index(Request $r)
     {
-        return User::where('role', 'operator')->paginate($r->integer('per_page', 10));
+        return User::query()
+            ->where('role', 'operator')
+            ->when($r->filled('q'), function ($query) use ($r) {
+                $term = trim((string) $r->string('q'));
+
+                $query->where(function ($inner) use ($term) {
+                    $inner
+                        ->where('name', 'like', '%'.$term.'%')
+                        ->orWhere('email', 'like', '%'.$term.'%');
+                });
+            })
+            ->when($r->has('is_active') && $r->get('is_active') !== null && $r->get('is_active') !== '', function ($query) use ($r) {
+                $query->where('is_active', filter_var($r->get('is_active'), FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE));
+            })
+            ->paginate($r->integer('per_page', 10));
     }
 
     public function store(Request $r)

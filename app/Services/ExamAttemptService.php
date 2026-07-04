@@ -189,6 +189,11 @@ class ExamAttemptService
     {
         return DB::transaction(function () use ($registration, $actor) {
             $lockedRegistration = ExamRegistration::whereKey($registration->id)->lockForUpdate()->firstOrFail();
+            throw_if(
+                $lockedRegistration->certificate_issued_at,
+                ValidationException::withMessages(['certificate' => 'Peserta tidak dapat mengulang tes karena sertifikat sudah pernah diterbitkan.'])
+            );
+
             $grantTime = now();
 
             ExamAttempt::where('user_id', $lockedRegistration->user_id)
