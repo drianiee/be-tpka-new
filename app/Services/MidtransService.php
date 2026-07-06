@@ -23,7 +23,7 @@ class MidtransService
         $user = $payment->user;
         $schedule = $payment->schedule;
 
-        $transaction = Snap::createTransaction([
+        $payload = [
             'transaction_details' => [
                 'order_id' => $payment->order_id,
                 'gross_amount' => (int) round((float) $payment->amount),
@@ -42,7 +42,18 @@ class MidtransService
             'callbacks' => [
                 'finish' => rtrim((string) config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000')), '/').'/payment/finish',
             ],
-        ]);
+        ];
+
+        $expiryAt = $schedule->registration_end_at ?: $schedule->start_at;
+        if ($expiryAt && now()->lt($expiryAt)) {
+            $payload['expiry'] = [
+                'start_time' => now()->format('Y-m-d H:i:s O'),
+                'unit' => 'minute',
+                'duration' => (int) max(1, now()->diffInMinutes($expiryAt)),
+            ];
+        }
+
+        $transaction = Snap::createTransaction($payload);
 
         return [
             'token' => $transaction->token,
@@ -70,6 +81,19 @@ class MidtransService
         $this->configure();
 
         $response = Transaction::status($orderId);
+
+        return json_decode(json_encode($response), true) ?: [];
+    }
+
+    public function cancel(string $orderId): array
+    {
+        if (app()->environment('testing')) {
+            return ['status_code' => '200', 'transaction_status' => 'cancel'];
+        }
+
+        $this->configure();
+
+        $response = Transaction::cancel($orderId);
 
         return json_decode(json_encode($response), true) ?: [];
     }

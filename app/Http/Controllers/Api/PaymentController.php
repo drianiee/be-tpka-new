@@ -5,11 +5,16 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Services\MidtransService;
+use App\Services\QuestionPackageAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class PaymentController extends Controller
 {
+    public function __construct(
+        private QuestionPackageAssignmentService $packageAssignments,
+    ) {}
+
     public function index(Request $request)
     {
         $query = Payment::query()->with(['user', 'schedule', 'registration'])->latest();
@@ -140,7 +145,28 @@ class PaymentController extends Controller
 
             if ($status === 'settlement' || ($status === 'capture' && in_array($fraud, [null, 'accept'], true))) {
                 $payment->update(['paid_at' => $payment->paid_at ?? now()]);
-                $registration->update(['status' => 'approved', 'access_status' => 'unlocked']);
+
+                $schedule = $registration->schedule()->first();
+                if (
+                    $schedule
+                    && now()->gte($schedule->start_at)
+                    && $registration->status !== 'approved'
+                    && $registration->access_status !== 'unlocked'
+                ) {
+                    $registration->update([
+                        'status' => 'expired',
+                        'access_status' => 'locked',
+                    ]);
+
+                    return;
+                }
+
+                $registration->update([
+                    'status' => 'approved',
+                    'access_status' => 'unlocked',
+                    'question_package_id' => $registration->question_package_id
+                        ?: $this->packageAssignments->pickRandomPackage($schedule)->id,
+                ]);
 
                 return;
             }
@@ -149,6 +175,7 @@ class PaymentController extends Controller
                 $registration->update([
                     'status' => $status === 'expire' ? 'expired' : 'cancelled',
                     'access_status' => 'locked',
+                    'question_package_id' => null,
                 ]);
             }
         });

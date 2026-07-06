@@ -50,7 +50,20 @@ class ScheduleController extends Controller
 
     public function upcoming()
     {
-        return Schedule::where('status', 'published')->whereNull('partner_id')->where('is_partner', false)->where('end_at', '>', now())->orderBy('start_at')->limit(10)->get()->map(fn ($s) => $this->legacy($s));
+        return Schedule::query()
+            ->where('status', 'published')
+            ->whereNull('partner_id')
+            ->where('is_partner', false)
+            ->where('start_at', '>', now())
+            ->where(function (Builder $query) {
+                $query
+                    ->whereNull('registration_end_at')
+                    ->orWhere('registration_end_at', '>=', now());
+            })
+            ->orderBy('start_at')
+            ->limit(10)
+            ->get()
+            ->map(fn ($s) => $this->legacy($s));
     }
 
     public function store(StoreScheduleRequest $request)

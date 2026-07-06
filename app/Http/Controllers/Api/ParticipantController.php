@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\Payment;
+use App\Models\QuestionPackage;
 use App\Models\Schedule;
 use App\Models\User;
 use App\Services\CertificateAssignmentService;
@@ -167,20 +168,23 @@ class ParticipantController extends Controller
 
         $user = $request->user();
         $free = (float) $schedule->price <= 0.0;
-            $existing = ExamRegistration::where('user_id', $user->id)->where('schedule_id', $schedule->id)->with('payment')->first();
+        $existing = ExamRegistration::where('user_id', $user->id)->where('schedule_id', $schedule->id)->with('payment')->first();
         if ($existing) {
             if (! $existing->certificate_id && $schedule->certificate_id) {
                 $existing->update(['certificate_id' => $schedule->certificate_id]);
             }
-            if (! $existing->question_package_id) {
-                $existing->update([
-                    'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
-                ]);
-            }
             if ($existing->access_status === 'unlocked') {
+                if (! $existing->question_package_id) {
+                    $existing->update([
+                        'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
+                    ]);
+                }
                 return $this->registrationResponse('Registration already approved.', $existing->load('payment'), null);
             }
             if ($existing->status === 'pending_payment') {
+                if ($existing->question_package_id) {
+                    $existing->update(['question_package_id' => null]);
+                }
                 $payment = $existing->payment ?: $this->createPendingPayment($existing, $schedule, $user);
                 $this->ensureSnap($payment->load(['user', 'schedule']));
 
@@ -190,6 +194,7 @@ class ParticipantController extends Controller
                 $existing->update([
                     'status' => 'pending_payment',
                     'access_status' => 'locked',
+                    'question_package_id' => null,
                     'registered_at' => now(),
                 ]);
                 $payment = $this->createPendingPayment($existing, $schedule, $user, true);
@@ -217,7 +222,6 @@ class ParticipantController extends Controller
         $registration = DB::transaction(fn () => ExamRegistration::create([
             'user_id' => $user->id,
             'schedule_id' => $schedule->id,
-            'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
             'certificate_id' => $schedule->certificate_id,
             'status' => 'pending_payment',
             'access_status' => 'locked',
@@ -291,10 +295,15 @@ class ParticipantController extends Controller
         $attempt = ExamAttempt::where('user_id', $userId)->where('schedule_id', $s->id)->latest()->first();
         $payment = $this->resolvedPayment($r);
         $isPartnerSchedule = (bool) ($s->is_partner || $s->partner_id);
+        $payment = $this->expirePendingRegistrationAfterScheduleStart($r, $payment, $isPartnerSchedule);
+        $r->refresh();
         $participantStatus = $this->participantStatusPayload($r, $isPartnerSchedule, $payment);
         $retakePending = $this->examAttemptService->hasPendingRetake($r);
-        $assignedPackage = $r->relationLoaded('package') ? $r->package : $r->package()->first();
-        $displayPackage = $assignedPackage ?: $s->package;
+        $assignedPackage = $r->relationLoaded('package') ? $r->package : $r->package()->with('sections')->first();
+        $assignedPackage?->loadMissing('sections');
+        $canSeeAssignedPackage = $r->access_status === 'unlocked'
+            || $r->status === 'approved';
+        $displayPackage = $canSeeAssignedPackage ? $assignedPackage : null;
         $activeAttempt = $attempt && $attempt->status === 'in_progress' ? $attempt : null;
         $completedAttempt = $attempt && in_array($attempt->status, ['submitted', 'expired'], true);
         $completedAttemptData = $completedAttempt
@@ -308,7 +317,79 @@ class ParticipantController extends Controller
             && (! $completedAttempt || $retakePending)
             && ($retakePending || now()->between($s->start_at, $s->end_at));
 
-        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source, 'retake_granted_at' => $r->retake_granted_at?->toISOString(), 'retake_consumed_at' => $r->retake_consumed_at?->toISOString()], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $canStart, 'has_attempt' => (bool) $activeAttempt, 'attempt_id' => $activeAttempt?->id, 'attempt_status' => $activeAttempt?->status ?? $attempt?->status, 'question_package' => $displayPackage ? ['id' => $displayPackage->id, 'name' => $displayPackage->name, 'total_duration_minutes' => $displayPackage->total_duration_minutes, 'total_questions' => $displayPackage->total_questions] : null, 'scores' => $completedAttemptData ? $this->sectionScoresPayload($completedAttemptData) : null, 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url'], 'public_pdf_url' => $certificate['public_pdf_url'] ?? null] : null];
+        return ['id' => $s->id, 'title' => $s->title, 'date' => $s->start_at->format('Y-m-d H:i:s'), 'start_time' => $s->start_at->format('H:i:s'), 'end_time' => $s->end_at->format('H:i:s'), 'status' => $s->status, 'is_partner' => $isPartnerSchedule, 'price' => (string) $s->price, 'payment_status' => $this->effectivePaymentStatus($r, $payment, $isPartnerSchedule), 'participant_status_key' => $participantStatus['key'], 'participant_status_label' => $participantStatus['label'], 'paid_at' => $payment?->paid_at?->toISOString(), 'order_id' => $payment?->order_id, 'payment_type' => $payment?->payment_type, 'partner' => $s->partner ? ['id' => $s->partner->id, 'name' => $s->partner->name] : null, 'registration' => ['id' => $r->id, 'status' => $r->status, 'access_status' => $r->access_status, 'registration_source' => $r->registration_source, 'retake_granted_at' => $r->retake_granted_at?->toISOString(), 'retake_consumed_at' => $r->retake_consumed_at?->toISOString()], 'payment' => $payment ? ['id' => $payment->id, 'transaction_status' => $payment->transaction_status, 'snap_redirect_url' => $payment->snap_redirect_url, 'paid_at' => $payment->paid_at?->toISOString()] : null, 'can_start' => $canStart, 'has_attempt' => (bool) $activeAttempt, 'attempt_id' => $activeAttempt?->id, 'attempt_status' => $activeAttempt?->status ?? $attempt?->status, 'question_package' => $this->participantPackagePayload($displayPackage), 'scores' => $completedAttemptData ? $this->sectionScoresPayload($completedAttemptData) : null, 'certificate' => $certificate ? ['certificate_no' => $certificate['certificate_no'], 'verify_url' => $certificate['verify_url'], 'download_url' => $certificate['download_url'], 'public_pdf_url' => $certificate['public_pdf_url'] ?? null] : null];
+    }
+
+    private function participantPackagePayload(?QuestionPackage $package): ?array
+    {
+        if (! $package) {
+            return null;
+        }
+
+        return [
+            'total_duration_minutes' => (int) $package->total_duration_minutes,
+            'total_questions' => (int) $package->total_questions,
+            'sections' => $package->sections
+                ->sortBy('order_number')
+                ->map(fn ($section) => [
+                    'code' => $section->code,
+                    'name' => $section->name,
+                    'duration_minutes' => (int) $section->duration_minutes,
+                    'question_count' => (int) $section->question_count,
+                    'target_question_count' => (int) $section->target_question_count,
+                ])
+                ->values(),
+        ];
+    }
+
+    private function expirePendingRegistrationAfterScheduleStart(ExamRegistration $registration, ?Payment $payment, bool $isPartnerSchedule): ?Payment
+    {
+        $schedule = $registration->schedule;
+
+        if ($isPartnerSchedule || now()->lt($schedule->start_at)) {
+            return $payment;
+        }
+
+        if (
+            $registration->access_status === 'unlocked'
+            || $registration->status === 'approved'
+            || $this->isPaidPayment($payment)
+        ) {
+            return $payment;
+        }
+
+        $paymentStatus = strtolower((string) ($payment?->transaction_status ?? ''));
+        $shouldExpire = $registration->status === 'pending_payment'
+            || $paymentStatus === 'pending';
+
+        if (! $shouldExpire) {
+            return $payment;
+        }
+
+        DB::transaction(function () use ($registration, $payment) {
+            $registration->update([
+                'status' => 'expired',
+                'access_status' => 'locked',
+                'question_package_id' => null,
+            ]);
+
+            if ($payment && strtolower((string) $payment->transaction_status) === 'pending') {
+                $payment->update([
+                    'transaction_status' => 'expire',
+                    'status_message' => 'Pendaftaran kedaluwarsa karena tes sudah dimulai.',
+                ]);
+            }
+        });
+
+        if ($payment && $payment->order_id) {
+            try {
+                $this->midtrans->cancel($payment->order_id);
+            } catch (\Throwable) {
+                // Local status is authoritative for exam access; Midtrans may already be expired/captured.
+            }
+        }
+
+        return $payment?->fresh();
     }
 
     private function participantScheduleStatusKey(ExamRegistration $registration): string
@@ -410,6 +491,14 @@ class ParticipantController extends Controller
             return $registration->user?->email_verified_at ? 'confirmed_email' : 'unconfirmed_email';
         }
 
+        if ($registration->status === 'expired') {
+            return 'expired';
+        }
+
+        if ($registration->status === 'cancelled') {
+            return 'cancelled';
+        }
+
         if (
             $registration->access_status === 'unlocked'
             || $registration->status === 'approved'
@@ -423,14 +512,6 @@ class ParticipantController extends Controller
             return $paymentStatus;
         }
 
-        if ($registration->status === 'expired') {
-            return 'expired';
-        }
-
-        if ($registration->status === 'cancelled') {
-            return 'cancelled';
-        }
-
         return 'pending_payment';
     }
 
@@ -440,6 +521,15 @@ class ParticipantController extends Controller
             return $registration->user?->email_verified_at
                 ? ['key' => 'confirmed_email', 'label' => 'Telah konfirmasi email']
                 : ['key' => 'unconfirmed_email', 'label' => 'Belum konfirmasi email'];
+        }
+
+        $paymentStatus = strtolower((string) ($payment?->transaction_status ?? ''));
+        if ($registration->status === 'expired' || in_array($paymentStatus, ['expire', 'expired'], true)) {
+            return ['key' => 'payment_expired', 'label' => 'Pendaftaran kedaluwarsa'];
+        }
+
+        if ($registration->status === 'cancelled' || in_array($paymentStatus, ['deny', 'cancel', 'cancelled', 'failure'], true)) {
+            return ['key' => 'payment_cancelled', 'label' => 'Pendaftaran dibatalkan'];
         }
 
         return (
