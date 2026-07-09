@@ -98,6 +98,26 @@ class QuestionBankService
             throw ValidationException::withMessages(['exam_section_id' => 'Section tidak termasuk paket soal ini.']);
         }
 
+        $questionId = isset($data['id']) ? (int) $data['id'] : null;
+        $existingQuestionCount = $section->questions()->count();
+        $isNewQuestion = ! $questionId;
+        $isMovingIntoSection = $questionId
+            ? ! Question::query()
+                ->whereKey($questionId)
+                ->where('exam_section_id', $section->id)
+                ->exists()
+            : false;
+
+        if (
+            $section->target_question_count > 0
+            && (($isNewQuestion && $existingQuestionCount >= $section->target_question_count)
+                || ($isMovingIntoSection && $existingQuestionCount >= $section->target_question_count))
+        ) {
+            throw ValidationException::withMessages([
+                'exam_section_id' => "Section {$section->name} sudah penuh. Maksimal {$section->target_question_count} soal.",
+            ]);
+        }
+
         $data['question_image'] = $this->normalizeImageReference($data['question_image'] ?? null, 'question_image');
 
         if (blank($data['question_text'] ?? null) && blank($data['question_image'] ?? null)) {
@@ -158,9 +178,10 @@ class QuestionBankService
 
     public function updateQuestion(QuestionPackage $package, Question $question, array $data): Question
     {
+        $data['id'] = $question->id;
         $data = $this->normalizeQuestionPayload($data, $package);
         $options = $data['options'];
-        unset($data['options']);
+        unset($data['options'], $data['id']);
 
         return DB::transaction(function () use ($question, $data, $options, $package) {
             $question->update($data);
@@ -178,6 +199,9 @@ class QuestionBankService
     {
         [$rows, $errors] = $this->readCsv($file);
         $sections = $package->sections()->get()->keyBy('code');
+        $plannedCounts = $sections->mapWithKeys(
+            fn (ExamSection $section) => [$section->code => (int) $section->question_count]
+        );
 
         foreach ($rows as $index => $row) {
             $rowNumber = $index + 2;
@@ -187,6 +211,22 @@ class QuestionBankService
             if (! $sections->has($sectionCode)) {
                 $errors[] = ['row' => $rowNumber, 'field' => 'section_code', 'message' => 'section_code tidak valid.'];
             }
+
+            if ($sections->has($sectionCode)) {
+                $section = $sections->get($sectionCode);
+                $nextCount = ((int) ($plannedCounts[$sectionCode] ?? 0)) + 1;
+
+                if ($section->target_question_count > 0 && $nextCount > (int) $section->target_question_count) {
+                    $errors[] = [
+                        'row' => $rowNumber,
+                        'field' => 'section_code',
+                        'message' => "Section {$section->name} melebihi batas {$section->target_question_count} soal.",
+                    ];
+                } else {
+                    $plannedCounts[$sectionCode] = $nextCount;
+                }
+            }
+
             if (! in_array($correct, ['A', 'B', 'C', 'D'], true)) {
                 $errors[] = ['row' => $rowNumber, 'field' => 'correct_option', 'message' => 'correct_option wajib A/B/C/D.'];
             }

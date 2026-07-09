@@ -103,7 +103,7 @@ class ExamAttemptService
                     $attempt->attemptQuestions()->create([
                         'question_id' => $question->id, 'exam_section_id' => $question->exam_section_id, 'order_number' => $index + 1,
                         'snapshot_question_text' => $question->question_text, 'snapshot_question_image' => $question->question_image,
-                        'snapshot_options' => $question->options->shuffle()->map(fn ($o) => ['id' => $o->id, 'option_label' => $o->option_label, 'option_text' => $o->option_text, 'option_image' => $o->option_image])->values()->all(),
+                        'snapshot_options' => $this->buildSnapshotOptions($question->options),
                     ]);
                 }
             }
@@ -333,5 +333,21 @@ class ExamAttemptService
         }
 
         return ! $registration->retake_consumed_at || $registration->retake_consumed_at->lt($registration->retake_granted_at);
+    }
+
+    private function buildSnapshotOptions($options): array
+    {
+        $labels = ['A', 'B', 'C', 'D'];
+
+        return $options
+            ->shuffle()
+            ->values()
+            ->map(fn ($option, int $index) => [
+                'id' => $option->id,
+                'option_label' => $labels[$index] ?? chr(65 + $index),
+                'option_text' => $option->option_text,
+                'option_image' => $option->option_image,
+            ])
+            ->all();
     }
 }
