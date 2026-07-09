@@ -8,6 +8,11 @@ class QuestionPackage extends Model
 {
     protected $fillable = ['name', 'status', 'total_duration_minutes', 'total_questions', 'target_total_questions', 'base_score', 'correct_answer_score', 'created_by'];
 
+    protected $attributes = [
+        'base_score' => 200,
+        'correct_answer_score' => 600,
+    ];
+
     protected function casts(): array
     {
         return [

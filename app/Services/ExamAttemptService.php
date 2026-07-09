@@ -261,13 +261,14 @@ class ExamAttemptService
 
     private function scoreAttempt(ExamAttempt $attempt): array
     {
-        $attempt->loadMissing(['attemptQuestions', 'answers', 'package']);
+        $attempt->loadMissing(['attemptQuestions', 'answers', 'package.sections']);
         $answers = $attempt->answers->keyBy('question_id');
         $questions = $attempt->attemptQuestions->groupBy('exam_section_id');
         $breakdown = [];
-        $totalCorrect = 0;
-        $baseScore = (int) ($attempt->package?->base_score ?? 200);
-        $correctAnswerScore = (int) ($attempt->package?->correct_answer_score ?? 2);
+        $sectionScores = [];
+        $packageSections = $attempt->package?->sections?->keyBy('id') ?? collect();
+        $baseScore = max(0, (int) ($attempt->package?->base_score ?? 200));
+        $scoreSpan = max(0, (int) ($attempt->package?->correct_answer_score ?? 600));
 
         foreach ($questions as $sectionId => $rows) {
             $correct = 0;
@@ -290,14 +291,18 @@ class ExamAttemptService
 
                 if ($isCorrect) {
                     $correct++;
-                    $totalCorrect++;
                 } else {
                     $wrong++;
                 }
             }
 
+            $totalQuestions = max(
+                0,
+                (int) ($packageSections->get($sectionId)?->target_question_count ?: $rows->count())
+            );
             $rawScore = (float) $correct;
-            $finalScore = (float) ($correct * $correctAnswerScore);
+            $finalScore = $this->sectionScore($correct, $totalQuestions, $baseScore, $scoreSpan);
+            $sectionScores[] = $finalScore;
 
             ExamScore::updateOrCreate(
                 ['exam_attempt_id' => $attempt->id, 'exam_section_id' => $sectionId],
@@ -315,15 +320,34 @@ class ExamAttemptService
                 'correct_count' => $correct,
                 'wrong_count' => $wrong,
                 'unanswered_count' => $unanswered,
+                'total_questions' => $totalQuestions,
                 'raw_score' => $rawScore,
                 'final_score' => $finalScore,
             ];
         }
 
         return [
-            'score_total' => (float) ($baseScore + ($totalCorrect * $correctAnswerScore)),
+            'score_total' => (float) $this->totalScore($sectionScores),
             'score_breakdown' => $breakdown,
         ];
+    }
+
+    private function sectionScore(int $correctCount, int $totalQuestions, int $baseScore, int $scoreSpan): int
+    {
+        if ($totalQuestions <= 0) {
+            return $baseScore;
+        }
+
+        return (int) round($baseScore + (($correctCount / $totalQuestions) * $scoreSpan));
+    }
+
+    private function totalScore(array $sectionScores): int
+    {
+        if ($sectionScores === []) {
+            return 200;
+        }
+
+        return (int) round(array_sum($sectionScores) / count($sectionScores));
     }
 
     public function hasPendingRetake(ExamRegistration $registration): bool

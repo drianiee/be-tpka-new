@@ -37,6 +37,8 @@ class CertificateRenderer
 
         $templateUri = $this->dataUri($templatePath);
         $qrUri = $this->qrDataUri($verifyUrl, (int) ($fields['qr_code']['size'] ?? 160));
+        $signPath = $this->optionalPublicPath($template->sign_file);
+        $stampPath = $this->optionalPublicPath($template->stamp_file);
         $signUri = $this->optionalPublicDataUri($template->sign_file);
         $stampUri = $this->optionalPublicDataUri($template->stamp_file);
         $html = $this->html($templateUri, $qrUri, $fields, [
@@ -49,6 +51,9 @@ class CertificateRenderer
         ], $width, $height, [
             'sign_image' => $signUri,
             'stamp_image' => $stampUri,
+        ], [
+            'sign_image' => $signPath ? $this->imageDimensions($signPath) : null,
+            'stamp_image' => $stampPath ? $this->imageDimensions($stampPath) : null,
         ]);
 
         $options = new Options;
@@ -131,18 +136,19 @@ class CertificateRenderer
             }
 
             $field = $fields[$imageKey];
-            $targetWidth = max(20, (int) ($field['width'] ?? $field['size'] ?? imagesx($image)));
-            $targetHeight = max(20, (int) ($field['height'] ?? $field['size'] ?? imagesy($image)));
+            $frameWidth = max(20, (int) ($field['width'] ?? $field['size'] ?? imagesx($image)));
+            $frameHeight = max(20, (int) ($field['height'] ?? $field['size'] ?? imagesy($image)));
+            $fit = $this->fitImageToFrame($frameWidth, $frameHeight, imagesx($image), imagesy($image));
 
             imagecopyresampled(
                 $canvas,
                 $image,
-                (int) ($field['x'] ?? 0),
-                (int) ($field['y'] ?? 0),
+                (int) ($field['x'] ?? 0) + $fit['offset_x'],
+                (int) ($field['y'] ?? 0) + $fit['offset_y'],
                 0,
                 0,
-                $targetWidth,
-                $targetHeight,
+                $fit['width'],
+                $fit['height'],
                 imagesx($image),
                 imagesy($image)
             );
@@ -171,7 +177,16 @@ class CertificateRenderer
         return $binary;
     }
 
-    private function html(string $templateUri, string $qrUri, array $fields, array $data, int $width, int $height, array $imageUris = []): string
+    private function html(
+        string $templateUri,
+        string $qrUri,
+        array $fields,
+        array $data,
+        int $width,
+        int $height,
+        array $imageUris = [],
+        array $imageDimensions = []
+    ): string
     {
         $nodes = [];
         foreach ($fields as $key => $field) {
@@ -197,13 +212,18 @@ class CertificateRenderer
                     continue;
                 }
 
+                $frameWidth = max(20, (int) ($field['width'] ?? $field['size'] ?? 180));
+                $frameHeight = max(20, (int) ($field['height'] ?? $field['size'] ?? 90));
+                [$sourceWidth, $sourceHeight] = $imageDimensions[$key] ?? [$frameWidth, $frameHeight];
+                $fit = $this->fitImageToFrame($frameWidth, $frameHeight, (int) $sourceWidth, (int) $sourceHeight);
+
                 $nodes[] = sprintf(
-                    '<img src="%s" style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;object-fit:contain;" />',
+                    '<img src="%s" style="position:absolute;left:%dpx;top:%dpx;width:%dpx;height:%dpx;" />',
                     e($uri),
-                    (int) ($field['x'] ?? 0),
-                    (int) ($field['y'] ?? 0),
-                    max(20, (int) ($field['width'] ?? $field['size'] ?? 180)),
-                    max(20, (int) ($field['height'] ?? $field['size'] ?? 90)),
+                    (int) ($field['x'] ?? 0) + $fit['offset_x'],
+                    (int) ($field['y'] ?? 0) + $fit['offset_y'],
+                    $fit['width'],
+                    $fit['height'],
                 );
                 continue;
             }
@@ -213,9 +233,10 @@ class CertificateRenderer
             $fontSize = max(8, (int) ($field['fontSize'] ?? 24));
             $color = $this->safeColor((string) ($field['color'] ?? '#0f172a'));
             $fontFamily = $this->safeFont((string) ($field['fontFamily'] ?? 'DejaVu Sans'));
+            $fontWeight = $this->safeFontWeight((string) ($field['fontWeight'] ?? 'normal'));
 
             $nodes[] = sprintf(
-                '<div style="position:absolute;left:%dpx;top:%dpx;width:%dpx;text-align:%s;font-size:%dpx;color:%s;font-family:%s;line-height:1.2;white-space:pre-wrap;">%s</div>',
+                '<div style="position:absolute;left:%dpx;top:%dpx;width:%dpx;text-align:%s;font-size:%dpx;color:%s;font-family:%s;font-weight:%s;line-height:1.2;white-space:pre-wrap;">%s</div>',
                 (int) ($field['x'] ?? 0),
                 (int) ($field['y'] ?? 0),
                 max(40, (int) ($field['width'] ?? 500)),
@@ -223,6 +244,7 @@ class CertificateRenderer
                 $fontSize,
                 $color,
                 $fontFamily,
+                $fontWeight,
                 e((string) $text),
             );
         }
@@ -318,6 +340,16 @@ class CertificateRenderer
         return is_file($fullPath) ? $fullPath : null;
     }
 
+    /**
+     * @return array{0:int,1:int}
+     */
+    private function imageDimensions(string $path): array
+    {
+        [$width, $height] = getimagesize($path) ?: [0, 0];
+
+        return [max(1, (int) $width), max(1, (int) $height)];
+    }
+
     private function qrDataUri(string $url, int $size): string
     {
         return 'data:image/png;base64,'.base64_encode($this->qrBinary($url, $size));
@@ -345,9 +377,41 @@ class CertificateRenderer
         return $font !== '' ? $font : 'DejaVu Sans';
     }
 
+    private function safeFontWeight(string $weight): string
+    {
+        return in_array($weight, ['normal', 'medium', 'semibold', 'bold'], true)
+            ? $weight
+            : 'normal';
+    }
+
+    /**
+     * @return array{width:int,height:int,offset_x:int,offset_y:int}
+     */
+    private function fitImageToFrame(int $frameWidth, int $frameHeight, int $imageWidth, int $imageHeight): array
+    {
+        $frameWidth = max(20, $frameWidth);
+        $frameHeight = max(20, $frameHeight);
+        $imageWidth = max(1, $imageWidth);
+        $imageHeight = max(1, $imageHeight);
+
+        $scale = min($frameWidth / $imageWidth, $frameHeight / $imageHeight);
+        $width = max(1, (int) round($imageWidth * $scale));
+        $height = max(1, (int) round($imageHeight * $scale));
+
+        return [
+            'width' => $width,
+            'height' => $height,
+            'offset_x' => (int) floor(($frameWidth - $width) / 2),
+            'offset_y' => (int) floor(($frameHeight - $height) / 2),
+        ];
+    }
+
     private function drawTextField(\GdImage $canvas, array $field, string $text): void
     {
-        $fontPath = $this->fontPath((string) ($field['fontFamily'] ?? 'Arial'));
+        $fontPath = $this->fontPath(
+            (string) ($field['fontFamily'] ?? 'Arial'),
+            (string) ($field['fontWeight'] ?? 'normal'),
+        );
         $size = max(8, (int) ($field['fontSize'] ?? 24));
         $x = (int) ($field['x'] ?? 0);
         $y = (int) ($field['y'] ?? 0);
@@ -414,10 +478,28 @@ class CertificateRenderer
         return $box ? abs((int) ($box[2] - $box[0])) : 0;
     }
 
-    private function fontPath(string $fontFamily): string
+    private function fontPath(string $fontFamily, string $fontWeight = 'normal'): string
     {
+        $weight = $this->safeFontWeight($fontWeight);
+        $interCandidates = match ($weight) {
+            'bold' => ['Inter-Bold', 'Inter_28pt-Bold', 'Inter Tight Bold'],
+            'semibold' => ['Inter-SemiBold', 'Inter_28pt-SemiBold', 'Inter Tight SemiBold'],
+            'medium' => ['Inter-Medium', 'Inter_28pt-Medium', 'Inter Tight Medium'],
+            default => ['Inter-Regular', 'Inter_28pt-Regular', 'Inter Tight Regular', 'Inter'],
+        };
+
+        $fontCandidates = strcasecmp($fontFamily, 'Inter') === 0
+            ? $interCandidates
+            : [$fontFamily];
+
         $candidates = [
-            '/System/Library/Fonts/Supplemental/'.$fontFamily.'.ttf',
+            ...collect($fontCandidates)
+                ->flatMap(fn (string $font) => [
+                    '/System/Library/Fonts/Supplemental/'.$font.'.ttf',
+                    '/Library/Fonts/'.$font.'.ttf',
+                    '/System/Library/AssetsV2/com_apple_MobileAsset_Font7/'.trim($font).'.ttf',
+                ])
+                ->all(),
             '/System/Library/Fonts/Supplemental/Arial.ttf',
             self::FALLBACK_FONT,
         ];

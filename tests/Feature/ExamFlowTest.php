@@ -39,6 +39,10 @@ class ExamFlowTest extends TestCase
 
         $this->getJson('/api/participant/schedules', $headers)
             ->assertOk()
+            ->assertJsonMissing(['id' => $schedule->id]);
+
+        $this->getJson('/api/participant/my-schedules', $headers)
+            ->assertOk()
             ->assertJsonFragment(['id' => $schedule->id]);
 
         $attemptResponse = $this->postJson("/api/participant/schedules/{$schedule->id}/attempts", [], $headers)
@@ -63,19 +67,19 @@ class ExamFlowTest extends TestCase
             ->assertOk()->assertJsonPath('status', 'submitted');
         $second = $this->postJson("/api/participant/attempts/{$attemptId}/submit", [], $headers)
             ->assertOk()->assertJsonPath('status', 'submitted');
-        $first->assertJsonPath('score_total', 202)
+        $first->assertJsonPath('score_total', 500)
             ->assertJsonPath('score_breakdown.0.correct_count', 1)
-            ->assertJsonPath('score_breakdown.0.final_score', 2);
+            ->assertJsonPath('score_breakdown.0.final_score', 500);
 
         $this->getJson("/api/participant/attempts/{$attemptId}/result", $headers)
             ->assertOk()
             ->assertJsonPath('status', 'submitted')
-            ->assertJsonPath('score_total', 202);
+            ->assertJsonPath('score_total', 500);
 
         $scores = $this->getJson('/api/participant/scores', $headers)
             ->assertOk()
-            ->assertJsonPath('data.0.scores.verbal', 2)
-            ->assertJsonPath('data.0.scores.total', 202)
+            ->assertJsonPath('data.0.scores.verbal', 500)
+            ->assertJsonPath('data.0.scores.total', 500)
             ->assertJsonPath('data.0.certificate.certificate_no', 'TPA/'.$schedule->id.'/'.str_pad((string) ExamRegistration::where('schedule_id', $schedule->id)->where('user_id', $participant->id)->value('id'), 6, '0', STR_PAD_LEFT));
 
         $verifyUrl = $scores->json('data.0.certificate.verify_url');
@@ -126,9 +130,9 @@ class ExamFlowTest extends TestCase
 
         $this->getJson('/api/participant/scores', $headers)
             ->assertOk()
-            ->assertJsonPath('data.0.score_total', 202)
-            ->assertJsonPath('data.0.scores.verbal', 2)
-            ->assertJsonPath('data.0.scores.total', 202);
+            ->assertJsonPath('data.0.score_total', 500)
+            ->assertJsonPath('data.0.scores.verbal', 500)
+            ->assertJsonPath('data.0.scores.total', 500);
     }
 
     public function test_certificate_download_is_idempotent_and_blocks_retake_after_issue(): void
@@ -408,7 +412,7 @@ class ExamFlowTest extends TestCase
             'total_duration_minutes' => 30,
             'total_questions' => 2,
             'base_score' => 200,
-            'correct_answer_score' => 2,
+            'correct_answer_score' => 600,
             'created_by' => $admin->id,
         ]);
         $section = ExamSection::create([
