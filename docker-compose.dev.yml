@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile.dev
     image: tpka_app:dev
     ports:
-      - "127.0.0.1:${APP_PORT:-8000}:80"
+      - "127.0.0.1:8002:80"
     volumes:
       - ./:/var/www/html
       - tpka_vendor:/var/www/html/vendor
