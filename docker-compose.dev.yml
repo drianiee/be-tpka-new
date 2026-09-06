@@ -1,0 +1,25 @@
+services:
+  tpka_app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: tpka_app:dev
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:80"
+    volumes:
+      - ./:/var/www/html
+      - tpka_vendor:/var/www/html/vendor
+    command: >
+      sh -c "if [ ! -f vendor/autoload.php ]; then composer install; fi && apache2-foreground"
+    restart: unless-stopped
+    networks:
+      - tpka_shared
+    env_file:
+      - .env.dev
+
+volumes:
+  tpka_vendor:
+
+networks:
+  tpka_shared:
+    external: true
