@@ -13,7 +13,7 @@ services:
       sh -c "if [ ! -f vendor/autoload.php ]; then composer install; fi && apache2-foreground"
     restart: unless-stopped
     networks:
-      - tpka_shared
+      - tpka_shared_dev
     env_file:
       - .env.dev
 
@@ -21,5 +21,5 @@ volumes:
   tpka_vendor:
 
 networks:
-  tpka_shared:
+  tpka_shared_dev:
     external: true
