@@ -50,8 +50,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('sections/{section}', [QuestionContentController::class, 'deleteSection']);
         Route::get('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'questions']);
         Route::post('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'storePackageQuestion']);
-        Route::get('question-packages/{questionPackage}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
-        Route::post('question-packages/{questionPackage}/questions/import', [QuestionContentController::class, 'importQuestions']);
+        Route::get('sections/{section}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
+        Route::post('sections/{section}/questions/import', [QuestionContentController::class, 'importQuestions']);
         Route::get('questions/{question}', [QuestionContentController::class, 'showQuestion']);
         Route::put('questions/{question}', [QuestionContentController::class, 'updateQuestion']);
         Route::delete('questions/{question}', [QuestionContentController::class, 'deleteQuestion']);
@@ -160,8 +160,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::delete('sections/{section}', [QuestionContentController::class, 'deleteSection']);
             Route::get('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'questions']);
             Route::post('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'storePackageQuestion']);
-            Route::get('question-packages/{questionPackage}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
-            Route::post('question-packages/{questionPackage}/questions/import', [QuestionContentController::class, 'importQuestions']);
+            Route::get('sections/{section}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
+            Route::post('sections/{section}/questions/import', [QuestionContentController::class, 'importQuestions']);
             Route::get('questions', [QuestionContentController::class, 'questions']);
             Route::post('questions', [QuestionContentController::class, 'storeQuestion']);
             Route::get('questions/{question}', [QuestionContentController::class, 'showQuestion']);

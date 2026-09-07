@@ -27,8 +27,9 @@ class PartnerInvitationTest extends TestCase
     {
         $this->seed(DatabaseSeeder::class);
         $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
-        $partnerSchedule = $this->createSchedule(true);
-        $publicSchedule = $this->createSchedule(false);
+        // Harus jadwal yang belum mulai: endpoint "upcoming" memang menyaring start_at > now().
+        $partnerSchedule = $this->createFutureSchedule(true);
+        $publicSchedule = $this->createFutureSchedule(false);
 
         $this->getJson('/api/schedules/upcoming')
             ->assertOk()

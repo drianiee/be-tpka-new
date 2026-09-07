@@ -156,7 +156,7 @@ class CertificateIssueService
 
     private function frontendVerifyUrl(ExamRegistration $registration): string
     {
-        return rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/')
+        return rtrim((string) config('app.frontend_url'), '/')
             ."/certificates/verify/{$registration->certificate_verify_uuid}?h={$registration->certificate_verify_hash}";
     }
 }

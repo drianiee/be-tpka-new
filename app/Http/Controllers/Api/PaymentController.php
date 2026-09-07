@@ -8,6 +8,7 @@ use App\Services\MidtransService;
 use App\Services\QuestionPackageAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class PaymentController extends Controller
 {
@@ -71,13 +72,60 @@ class PaymentController extends Controller
     public function callback(Request $request, MidtransService $midtrans)
     {
         $payload = $request->all();
+        $orderId = (string) ($payload['order_id'] ?? '');
+        $transactionStatus = (string) ($payload['transaction_status'] ?? '');
+
         if (! $midtrans->validSignature($payload)) {
+            Log::warning('Midtrans callback ditolak: signature tidak valid.', [
+                'order_id' => $orderId,
+                'transaction_status' => $transactionStatus,
+            ]);
+
             return response()->json(['message' => 'Invalid signature.'], 403);
         }
 
-        $payment = Payment::where('order_id', $payload['order_id'] ?? null)->firstOrFail();
+        $payment = Payment::where('order_id', $orderId)->first();
 
-        $this->applyPaymentStatus($payment, $payload);
+        // Order yang tidak dikenal tetap dijawab 200 supaya Midtrans berhenti mengirim ulang.
+        // Efek sampingnya penting: setelah ini, 404 dari endpoint callback hanya bisa berarti
+        // satu hal, yaitu rutenya tidak terjangkau.
+        if (! $payment) {
+            Log::warning('Midtrans callback untuk order yang tidak dikenal.', [
+                'order_id' => $orderId,
+                'transaction_status' => $transactionStatus,
+            ]);
+
+            return response()->json([
+                'status' => 'ignored',
+                'message' => 'Order tidak dikenal.',
+                'order_id' => $orderId,
+            ]);
+        }
+
+        try {
+            $this->applyPaymentStatus($payment, $payload);
+        } catch (\Throwable $e) {
+            // Sengaja dijawab 500 supaya Midtrans mengirim ulang, karena kegagalan
+            // di sini biasanya sementara (database, jaringan) dan datanya belum tersimpan.
+            Log::error('Midtrans callback gagal diproses.', [
+                'order_id' => $orderId,
+                'transaction_status' => $transactionStatus,
+                'payment_id' => $payment->id,
+                'message' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Callback gagal diproses, silakan kirim ulang.',
+                'order_id' => $orderId,
+            ], 500);
+        }
+
+        Log::info('Midtrans callback diproses.', [
+            'order_id' => $orderId,
+            'transaction_status' => $transactionStatus,
+            'payment_id' => $payment->id,
+        ]);
 
         return ['status' => 'ok', 'message' => 'Callback processed.', 'order_id' => $payment->order_id];
     }
@@ -119,6 +167,22 @@ class PaymentController extends Controller
 
     private function applyPaymentStatus(Payment $payment, array $payload): void
     {
+        $incoming = (string) ($payload['transaction_status'] ?? $payment->transaction_status);
+
+        // Notifikasi Midtrans bisa datang terlambat atau tidak berurutan. Tanpa penjagaan ini,
+        // notifikasi "expire" yang menyusul setelah pembayaran lunas akan mengunci peserta
+        // yang sebenarnya sudah membayar.
+        if ($this->isSettled($payment) && in_array($incoming, ['deny', 'cancel', 'expire', 'failure'], true)) {
+            Log::warning('Notifikasi Midtrans diabaikan karena pembayaran sudah lunas.', [
+                'order_id' => $payment->order_id,
+                'payment_id' => $payment->id,
+                'status_tersimpan' => $payment->transaction_status,
+                'status_masuk' => $incoming,
+            ]);
+
+            return;
+        }
+
         DB::transaction(function () use ($payment, $payload) {
             $status = (string) ($payload['transaction_status'] ?? $payment->transaction_status);
             $fraud = $payload['fraud_status'] ?? null;
@@ -146,10 +210,14 @@ class PaymentController extends Controller
             if ($status === 'settlement' || ($status === 'capture' && in_array($fraud, [null, 'accept'], true))) {
                 $payment->update(['paid_at' => $payment->paid_at ?? now()]);
 
+                // Patokannya akhir ujian, bukan awal. Settlement kartu kredit sering baru
+                // tiba berjam-jam setelah peserta membayar; selama ujiannya masih berjalan
+                // peserta tetap berhak masuk.
                 $schedule = $registration->schedule()->first();
                 if (
                     $schedule
-                    && now()->gte($schedule->start_at)
+                    && $schedule->end_at
+                    && now()->gte($schedule->end_at)
                     && $registration->status !== 'approved'
                     && $registration->access_status !== 'unlocked'
                 ) {
@@ -161,11 +229,25 @@ class PaymentController extends Controller
                     return;
                 }
 
+                // Peserta yang sudah membayar tetap diloloskan meski paket soal belum siap.
+                // Kalau ini sampai gagal, callback tidak boleh ikut gagal: pembayarannya sah.
+                $packageId = $registration->question_package_id;
+                if (! $packageId) {
+                    try {
+                        $packageId = $this->packageAssignments->pickRandomPackage($schedule)->id;
+                    } catch (\Throwable $e) {
+                        Log::error('Pembayaran lunas tetapi paket soal gagal diacak.', [
+                            'order_id' => $payment->order_id,
+                            'registration_id' => $registration->id,
+                            'message' => $e->getMessage(),
+                        ]);
+                    }
+                }
+
                 $registration->update([
                     'status' => 'approved',
                     'access_status' => 'unlocked',
-                    'question_package_id' => $registration->question_package_id
-                        ?: $this->packageAssignments->pickRandomPackage($schedule)->id,
+                    'question_package_id' => $packageId,
                 ]);
 
                 return;
@@ -179,6 +261,12 @@ class PaymentController extends Controller
                 ]);
             }
         });
+    }
+
+    private function isSettled(Payment $payment): bool
+    {
+        return $payment->paid_at !== null
+            || in_array(strtolower((string) $payment->transaction_status), ['settlement', 'capture', 'paid'], true);
     }
 
     private function firstVaNumber(array $payload): ?string

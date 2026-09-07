@@ -9,7 +9,6 @@ use App\Models\Question;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
 use App\Models\User;
-use App\Services\MidtransService;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -325,6 +324,55 @@ class MidtransPaymentTest extends TestCase
             ->assertSuccessful()
             ->assertJsonPath('question_package.id', $assignedPackage->id)
             ->assertJsonPath('question_package.name', $assignedPackage->name);
+    }
+
+    public function test_callback_for_unknown_order_is_acknowledged_instead_of_returning_not_found(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+
+        $orderId = 'TPKA-999-tidak-ada';
+        $grossAmount = '150000.00';
+        $statusCode = '200';
+
+        $this->postJson('/api/payments/midtrans/callback', [
+            'order_id' => $orderId,
+            'transaction_status' => 'settlement',
+            'status_code' => $statusCode,
+            'gross_amount' => $grossAmount,
+            'signature_key' => hash('sha512', $orderId.$statusCode.$grossAmount.$this->serverKey),
+        ])
+            ->assertOk()
+            ->assertJsonPath('status', 'ignored')
+            ->assertJsonPath('order_id', $orderId);
+    }
+
+    public function test_late_expire_notification_does_not_lock_out_a_paid_participant(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+
+        $schedule = $this->createSchedule(150000);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+
+        $this->actingAs($participant, 'sanctum')
+            ->postJson("/api/participant/schedules/{$schedule->id}/register")
+            ->assertSuccessful();
+        $payment = Payment::where('user_id', $participant->id)->latest('id')->firstOrFail();
+
+        $this->postJson('/api/payments/midtrans/callback', $this->callbackPayload($payment))->assertOk();
+
+        $registration = $payment->registration()->first();
+        $this->assertSame('approved', $registration->status);
+        $this->assertSame('unlocked', $registration->access_status);
+
+        // Notifikasi "expire" yang datang terlambat tidak boleh membatalkan pembayaran yang sah.
+        $this->postJson('/api/payments/midtrans/callback', $this->callbackPayload($payment, 'expire'))->assertOk();
+
+        $registration->refresh();
+        $payment->refresh();
+        $this->assertSame('approved', $registration->status);
+        $this->assertSame('unlocked', $registration->access_status);
+        $this->assertSame('settlement', $payment->transaction_status);
+        $this->assertNotNull($payment->paid_at);
     }
 
     private function callbackPayload(Payment $payment, string $transactionStatus = 'settlement'): array

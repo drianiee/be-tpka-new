@@ -8,6 +8,9 @@ use App\Models\QuestionPackage;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 
 class QuestionBankService
 {
@@ -18,21 +21,17 @@ class QuestionBankService
         ['code' => 'spasial', 'name' => 'Spasial', 'order_number' => 4, 'duration_minutes' => 25, 'target_question_count' => 20],
     ];
 
+    public const IGNORED_SHEET_NAMES = ['Petunjuk', 'Contoh'];
+
+    /** Kolom wajib. section_code tidak termasuk: subtes ditentukan dari tempat import dijalankan. */
     public const IMPORT_COLUMNS = [
-        'section_code',
         'order_number',
         'question_text',
-        'question_image',
         'option_a_text',
-        'option_a_image',
         'option_b_text',
-        'option_b_image',
         'option_c_text',
-        'option_c_image',
         'option_d_text',
-        'option_d_image',
         'correct_option',
-        'score',
     ];
 
     public function createDefaultSections(QuestionPackage $package, array $sectionSettings = []): void
@@ -196,48 +195,37 @@ class QuestionBankService
         });
     }
 
-    public function importCsv(QuestionPackage $package, UploadedFile $file): array
+    public function importRows(ExamSection $section, UploadedFile $file): array
     {
-        [$rows, $errors] = $this->readCsv($file);
-        $sections = $package->sections()->get()->keyBy('code');
-        $plannedCounts = $sections->mapWithKeys(
-            fn (ExamSection $section) => [$section->code => (int) $section->question_count]
-        );
+        $package = $section->package;
+        [$rows, $errors] = $this->readRows($file, $section);
+
+        $limit = (int) $section->target_question_count;
+        $planned = (int) $section->questions()->count();
 
         foreach ($rows as $index => $row) {
             $rowNumber = $index + 2;
-            $sectionCode = strtolower(trim((string) ($row['section_code'] ?? '')));
             $correct = strtoupper(trim((string) ($row['correct_option'] ?? '')));
 
-            if (! $sections->has($sectionCode)) {
-                $errors[] = ['row' => $rowNumber, 'field' => 'section_code', 'message' => 'section_code tidak valid.'];
-            }
-
-            if ($sections->has($sectionCode)) {
-                $section = $sections->get($sectionCode);
-                $nextCount = ((int) ($plannedCounts[$sectionCode] ?? 0)) + 1;
-
-                if ($section->target_question_count > 0 && $nextCount > (int) $section->target_question_count) {
-                    $errors[] = [
-                        'row' => $rowNumber,
-                        'field' => 'section_code',
-                        'message' => "Section {$section->name} melebihi batas {$section->target_question_count} soal.",
-                    ];
-                } else {
-                    $plannedCounts[$sectionCode] = $nextCount;
-                }
+            $planned++;
+            if ($limit > 0 && $planned > $limit) {
+                $errors[] = [
+                    'row' => $rowNumber,
+                    'field' => 'jumlah soal',
+                    'message' => "Subtes {$section->name} melebihi batas {$limit} soal.",
+                ];
             }
 
             if (! in_array($correct, ['A', 'B', 'C', 'D'], true)) {
                 $errors[] = ['row' => $rowNumber, 'field' => 'correct_option', 'message' => 'correct_option wajib A/B/C/D.'];
             }
-            if (blank($row['question_text'] ?? null) && blank($row['question_image'] ?? null)) {
-                $errors[] = ['row' => $rowNumber, 'field' => 'question_text', 'message' => 'Soal wajib memiliki teks atau gambar.'];
+            if (blank($row['question_text'] ?? null)) {
+                $errors[] = ['row' => $rowNumber, 'field' => 'question_text', 'message' => 'Pertanyaan wajib diisi. Soal bergambar ditambahkan lewat tombol Tambah Soal.'];
             }
 
             foreach (['a', 'b', 'c', 'd'] as $label) {
-                if (blank($row["option_{$label}_text"] ?? null) && blank($row["option_{$label}_image"] ?? null)) {
-                    $errors[] = ['row' => $rowNumber, 'field' => "option_{$label}_text", 'message' => 'Setiap opsi wajib memiliki teks atau gambar.'];
+                if (blank($row["option_{$label}_text"] ?? null)) {
+                    $errors[] = ['row' => $rowNumber, 'field' => "option_{$label}_text", 'message' => 'Semua pilihan jawaban wajib diisi.'];
                 }
             }
         }
@@ -246,20 +234,19 @@ class QuestionBankService
             return ['imported' => 0, 'failed' => count($errors), 'errors' => $errors];
         }
 
-        DB::transaction(function () use ($rows, $sections, $package) {
+        DB::transaction(function () use ($rows, $section, $package) {
             foreach ($rows as $row) {
                 $correct = strtoupper(trim((string) $row['correct_option']));
-                $section = $sections->get(strtolower(trim((string) $row['section_code'])));
                 $this->createQuestion($package, [
                     'exam_section_id' => $section->id,
                     'order_number' => (int) ($row['order_number'] ?: $section->questions()->max('order_number') + 1),
-                    'question_text' => $row['question_text'] ?: null,
-                    'question_image' => $row['question_image'] ?: null,
-                    'score' => filled($row['score'] ?? null) ? (float) $row['score'] : 1,
+                    'question_text' => $row['question_text'],
+                    'question_image' => null,
+                    'score' => 1,
                     'options' => collect(['A', 'B', 'C', 'D'])->map(fn (string $label, int $i) => [
                         'option_label' => $label,
-                        'option_text' => $row['option_'.strtolower($label).'_text'] ?: null,
-                        'option_image' => $row['option_'.strtolower($label).'_image'] ?: null,
+                        'option_text' => $row['option_'.strtolower($label).'_text'],
+                        'option_image' => null,
                         'is_correct' => $label === $correct,
                         'order_number' => $i + 1,
                     ])->all(),
@@ -280,30 +267,26 @@ class QuestionBankService
         $package->update(['total_questions' => $package->questions()->count()]);
     }
 
-    private function readCsv(UploadedFile $file): array
+    private function readRows(UploadedFile $file, ExamSection $section): array
     {
-        $handle = fopen($file->getRealPath(), 'r');
-        if (! $handle) {
-            throw ValidationException::withMessages(['file' => 'File tidak dapat dibaca.']);
+        $extension = strtolower($file->getClientOriginalExtension() ?: $file->guessExtension() ?: 'csv');
+        $table = in_array($extension, ['xlsx', 'xls'], true)
+            ? $this->readSpreadsheetTable($file, $section)
+            : $this->readCsvTable($file);
+
+        if ($table === []) {
+            return [[], [['row' => 1, 'field' => 'header', 'message' => 'File kosong atau tidak ada judul kolom.']]];
         }
 
-        $header = fgetcsv($handle);
-        if (! $header) {
-            fclose($handle);
-
-            return [[], [['row' => 1, 'field' => 'header', 'message' => 'Header CSV kosong.']]];
-        }
-
-        $header = array_map(fn ($value) => strtolower(trim((string) $value)), $header);
+        $header = array_map(fn ($value) => strtolower(trim((string) $value)), array_shift($table));
         $missing = array_values(array_diff(self::IMPORT_COLUMNS, $header));
         if ($missing !== []) {
-            fclose($handle);
-
             return [[], [['row' => 1, 'field' => 'header', 'message' => 'Kolom wajib belum ada: '.implode(', ', $missing)]]];
         }
 
         $rows = [];
-        while (($line = fgetcsv($handle)) !== false) {
+        $errors = [];
+        foreach ($table as $line) {
             if (count(array_filter($line, fn ($value) => filled($value))) === 0) {
                 continue;
             }
@@ -311,11 +294,103 @@ class QuestionBankService
             foreach ($header as $index => $key) {
                 $assoc[$key] = isset($line[$index]) && filled($line[$index]) ? trim((string) $line[$index]) : null;
             }
+
+            // File lama masih membawa kolom section_code. Isinya harus cocok dengan subtes tujuan.
+            $declared = strtolower((string) ($assoc['section_code'] ?? ''));
+            if ($declared !== '' && $declared !== strtolower((string) $section->code)) {
+                $errors[] = [
+                    'row' => count($rows) + 2,
+                    'field' => 'section_code',
+                    'message' => "Baris ini ditujukan untuk subtes \"{$declared}\", padahal kamu mengimport ke {$section->name}.",
+                ];
+            }
+
             $rows[] = $assoc;
+        }
+
+        return [$rows, $errors];
+    }
+
+    private function readCsvTable(UploadedFile $file): array
+    {
+        $handle = fopen($file->getRealPath(), 'r');
+        if (! $handle) {
+            throw ValidationException::withMessages(['file' => 'File tidak dapat dibaca.']);
+        }
+
+        $table = [];
+        while (($line = fgetcsv($handle)) !== false) {
+            $table[] = $line;
         }
         fclose($handle);
 
-        return [$rows, []];
+        return $table;
+    }
+
+    private function readSpreadsheetTable(UploadedFile $file, ExamSection $section): array
+    {
+        try {
+            $reader = IOFactory::createReaderForFile($file->getRealPath());
+            $reader->setReadDataOnly(true);
+            $spreadsheet = $reader->load($file->getRealPath());
+        } catch (\Throwable) {
+            throw ValidationException::withMessages(['file' => 'File Excel tidak dapat dibaca. Pastikan formatnya .xlsx dan tidak rusak.']);
+        }
+
+        $sheet = $this->resolveSheet($spreadsheet, $section);
+        $table = $sheet->toArray(null, true, false, false);
+        $spreadsheet->disconnectWorksheets();
+
+        return array_map(
+            fn (array $line) => array_map(
+                fn ($value) => is_float($value) && floor($value) === $value ? (string) (int) $value : $value,
+                $line,
+            ),
+            $table,
+        );
+    }
+
+    /**
+     * Sheet data dinamai sesuai subtes, jadi nama sheet sekaligus jadi pengaman:
+     * template subtes lain akan ditolak alih-alih masuk ke subtes yang salah.
+     */
+    private function resolveSheet(Spreadsheet $spreadsheet, ExamSection $section): Worksheet
+    {
+        $matches = fn (string $title, string $value) => $value !== '' && strcasecmp(trim($title), trim($value)) === 0;
+
+        foreach ($spreadsheet->getAllSheets() as $sheet) {
+            if ($matches($sheet->getTitle(), (string) $section->name) || $matches($sheet->getTitle(), (string) $section->code)) {
+                return $sheet;
+            }
+        }
+
+        $candidates = collect($spreadsheet->getAllSheets())
+            ->reject(fn (Worksheet $sheet) => in_array($sheet->getTitle(), self::IGNORED_SHEET_NAMES, true))
+            ->values();
+
+        // Satu sheet data tapi namanya subtes lain: hampir pasti salah unggah template.
+        $otherSection = $section->package->sections
+            ->first(fn (ExamSection $other) => $candidates->contains(
+                fn (Worksheet $sheet) => $matches($sheet->getTitle(), (string) $other->name) || $matches($sheet->getTitle(), (string) $other->code)
+            ));
+
+        if ($otherSection) {
+            $spreadsheet->disconnectWorksheets();
+
+            throw ValidationException::withMessages([
+                'file' => "File ini template untuk subtes {$otherSection->name}, sedangkan kamu mengimport ke {$section->name}. Unduh template {$section->name} lalu ulangi.",
+            ]);
+        }
+
+        if ($candidates->count() === 1) {
+            return $candidates->first();
+        }
+
+        $spreadsheet->disconnectWorksheets();
+
+        throw ValidationException::withMessages([
+            'file' => "Sheet \"{$section->name}\" tidak ditemukan di file ini. Unduh template {$section->name} lalu isi sheet tersebut.",
+        ]);
     }
 
     private function normalizeImageReference(mixed $value, string $field): ?string

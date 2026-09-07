@@ -2,11 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Models\Certificate;
 use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
 use App\Models\ExamScore;
 use App\Models\ExamSection;
-use App\Models\Certificate;
 use App\Models\Payment;
 use App\Models\Question;
 use App\Models\QuestionOption;

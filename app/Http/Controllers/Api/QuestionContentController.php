@@ -7,7 +7,9 @@ use App\Models\ExamSection;
 use App\Models\Question;
 use App\Models\QuestionPackage;
 use App\Services\QuestionBankService;
+use App\Services\QuestionImportTemplate;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class QuestionContentController extends Controller
@@ -123,27 +125,30 @@ class QuestionContentController extends Controller
         return response()->noContent();
     }
 
-    public function importTemplate()
+    public function importTemplate(ExamSection $section)
     {
-        $rows = [
-            QuestionBankService::IMPORT_COLUMNS,
-            ['verbal', '1', 'Contoh soal verbal', '', 'Pilihan A', '', 'Pilihan B', '', 'Pilihan C', '', 'Pilihan D', '', 'A', '1'],
-        ];
-        $csv = collect($rows)->map(fn ($row) => collect($row)->map(fn ($value) => '"'.str_replace('"', '""', (string) $value).'"')->implode(','))->implode("\n")."\n";
+        $contents = (new QuestionImportTemplate)->build($section);
+        $filename = 'template-soal-'.Str::slug($section->name ?: 'subtes').'-'.Str::slug($section->package?->name ?: 'paket').'.xlsx';
 
-        return response($csv, 200, [
-            'Content-Type' => 'text/csv',
-            'Content-Disposition' => 'attachment; filename="template-import-soal-tpa.csv"',
+        return response($contents, 200, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+            'Content-Length' => (string) strlen($contents),
         ]);
     }
 
-    public function importQuestions(Request $request, QuestionPackage $questionPackage)
+    public function importQuestions(Request $request, ExamSection $section)
     {
-        $data = $request->validate(['file' => ['required', 'file', 'mimes:csv,txt', 'max:10240']]);
-        $result = $this->questionBank->importCsv($questionPackage, $data['file']);
+        $data = $request->validate(['file' => ['required', 'file', 'extensions:xlsx,xls,csv,txt', 'max:10240']]);
+        $result = $this->questionBank->importRows($section, $data['file']);
         $status = $result['errors'] === [] ? 201 : 422;
 
-        return response()->json(['message' => $status === 201 ? 'Import soal berhasil.' : 'Import gagal, periksa error per baris.', ...$result], $status);
+        return response()->json([
+            'message' => $status === 201
+                ? 'Import soal '.$section->name.' berhasil.'
+                : 'Import gagal, periksa error per baris.',
+            ...$result,
+        ], $status);
     }
 
     public function uploadImage(Request $request)

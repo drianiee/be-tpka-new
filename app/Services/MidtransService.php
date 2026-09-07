@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\Payment;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use Midtrans\Config;
 use Midtrans\Snap;
 use Midtrans\Transaction;
@@ -40,7 +42,7 @@ class MidtransService
                 'name' => $schedule->title,
             ]],
             'callbacks' => [
-                'finish' => rtrim((string) config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000')), '/').'/payment/finish',
+                'finish' => rtrim((string) config('app.frontend_url'), '/').'/payment/finish',
             ],
         ];
 
@@ -53,7 +55,18 @@ class MidtransService
             ];
         }
 
-        $transaction = Snap::createTransaction($payload);
+        try {
+            $transaction = Snap::createTransaction($payload);
+        } catch (\Throwable $e) {
+            Log::error('Gagal membuat transaksi Snap Midtrans.', [
+                'order_id' => $payment->order_id,
+                'message' => $e->getMessage(),
+            ]);
+
+            throw ValidationException::withMessages([
+                'payment' => 'Tidak dapat menghubungi Midtrans saat ini. Coba beberapa saat lagi.',
+            ]);
+        }
 
         return [
             'token' => $transaction->token,
@@ -80,7 +93,18 @@ class MidtransService
     {
         $this->configure();
 
-        $response = Transaction::status($orderId);
+        try {
+            $response = Transaction::status($orderId);
+        } catch (\Throwable $e) {
+            Log::error('Gagal mengambil status transaksi Midtrans.', [
+                'order_id' => $orderId,
+                'message' => $e->getMessage(),
+            ]);
+
+            throw ValidationException::withMessages([
+                'order_id' => 'Status pembayaran tidak dapat diambil dari Midtrans. Pastikan order id benar dan coba lagi.',
+            ]);
+        }
 
         return json_decode(json_encode($response), true) ?: [];
     }
@@ -93,7 +117,18 @@ class MidtransService
 
         $this->configure();
 
-        $response = Transaction::cancel($orderId);
+        try {
+            $response = Transaction::cancel($orderId);
+        } catch (\Throwable $e) {
+            Log::error('Gagal membatalkan transaksi Midtrans.', [
+                'order_id' => $orderId,
+                'message' => $e->getMessage(),
+            ]);
+
+            throw ValidationException::withMessages([
+                'order_id' => 'Pembatalan pembayaran ditolak Midtrans. Periksa status transaksinya terlebih dahulu.',
+            ]);
+        }
 
         return json_decode(json_encode($response), true) ?: [];
     }

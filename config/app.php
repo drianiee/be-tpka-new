@@ -56,6 +56,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Frontend URL
+    |--------------------------------------------------------------------------
+    |
+    | Alamat aplikasi Next.js. Wajib dibaca lewat config() dan bukan env()
+    | langsung, karena env() mengembalikan null begitu config di-cache.
+    |
+    */
+
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Registration Close Offset
+    |--------------------------------------------------------------------------
+    |
+    | Berapa menit sebelum ujian dimulai pendaftaran ditutup.
+    |
+    */
+
+    'registration_close_offset_minutes' => (int) env('REGISTRATION_CLOSE_OFFSET_MINUTES', 30),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |

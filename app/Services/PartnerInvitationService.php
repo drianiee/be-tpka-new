@@ -276,11 +276,11 @@ class PartnerInvitationService
 
     private function onboardingUrl(string $token): string
     {
-        return rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/').'/partner/onboarding?token='.$token;
+        return rtrim((string) config('app.frontend_url'), '/').'/partner/onboarding?token='.$token;
     }
 
     private function scheduleUrl(Schedule $schedule): string
     {
-        return rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/').'/dashboard/peserta/my-schedules/'.$schedule->id;
+        return rtrim((string) config('app.frontend_url'), '/').'/dashboard/peserta/my-schedules/'.$schedule->id;
     }
 }

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\ExamRegistration;
+use App\Models\ExamSection;
 use App\Models\Question;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
@@ -11,6 +12,8 @@ use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use Tests\TestCase;
 
 class QuestionBankTest extends TestCase
@@ -72,33 +75,77 @@ class QuestionBankTest extends TestCase
         $this->assertSame(1, Question::firstOrFail()->options()->where('is_correct', true)->count());
     }
 
-    public function test_csv_import_is_all_or_nothing_with_row_errors(): void
+    public function test_import_is_all_or_nothing_with_row_errors(): void
     {
         $this->seed(DatabaseSeeder::class);
         $headers = $this->headersFor('admin@tpka.com');
         $package = $this->createPackage($headers);
+        $verbal = ExamSection::where('question_package_id', $package->id)->where('code', 'verbal')->firstOrFail();
 
         $valid = UploadedFile::fake()->createWithContent('questions.csv', implode("\n", [
-            'section_code,order_number,question_text,question_image,option_a_text,option_a_image,option_b_text,option_b_image,option_c_text,option_c_image,option_d_text,option_d_image,correct_option,score',
-            'verbal,1,"Sinonim cepat adalah?",,Lekas,,Lambat,,Diam,,Turun,,A,1',
+            'order_number,question_text,option_a_text,option_b_text,option_c_text,option_d_text,correct_option',
+            '1,"Sinonim cepat adalah?",Lekas,Lambat,Diam,Turun,A',
         ])."\n");
 
-        $this->post("/api/question-packages/{$package->id}/questions/import", ['file' => $valid], [...$headers, 'Accept' => 'application/json'])
+        $this->post("/api/sections/{$verbal->id}/questions/import", ['file' => $valid], [...$headers, 'Accept' => 'application/json'])
             ->assertCreated()
             ->assertJsonPath('imported', 1);
         $this->assertDatabaseCount('questions', 1);
+        $this->assertDatabaseHas('questions', ['exam_section_id' => $verbal->id]);
         $this->assertDatabaseHas('question_options', ['option_label' => 'A', 'is_correct' => true]);
 
         $invalid = UploadedFile::fake()->createWithContent('questions.csv', implode("\n", [
-            'section_code,order_number,question_text,question_image,option_a_text,option_a_image,option_b_text,option_b_image,option_c_text,option_c_image,option_d_text,option_d_image,correct_option,score',
-            'unknown,2,"Soal invalid",,A,,B,,C,,D,,E,1',
+            'order_number,question_text,option_a_text,option_b_text,option_c_text,option_d_text,correct_option',
+            '2,"Soal invalid",A,B,C,D,E',
         ])."\n");
 
-        $this->post("/api/question-packages/{$package->id}/questions/import", ['file' => $invalid], [...$headers, 'Accept' => 'application/json'])
+        $this->post("/api/sections/{$verbal->id}/questions/import", ['file' => $invalid], [...$headers, 'Accept' => 'application/json'])
             ->assertUnprocessable()
             ->assertJsonPath('imported', 0)
             ->assertJsonStructure(['errors' => [['row', 'field', 'message']]]);
         $this->assertDatabaseCount('questions', 1);
+    }
+
+    public function test_template_is_scoped_to_one_section_and_rejects_other_section_file(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $headers = $this->headersFor('admin@tpka.com');
+        $package = $this->createPackage($headers);
+        $kuantitatif = ExamSection::where('question_package_id', $package->id)->where('code', 'kuantitatif')->firstOrFail();
+        $verbal = ExamSection::where('question_package_id', $package->id)->where('code', 'verbal')->firstOrFail();
+
+        $response = $this->get("/api/sections/{$kuantitatif->id}/questions/import-template", $headers)->assertOk();
+        $this->assertStringContainsString('.xlsx', $response->headers->get('content-disposition'));
+
+        $path = tempnam(sys_get_temp_dir(), 'tpl').'.xlsx';
+        file_put_contents($path, $response->getContent());
+
+        $spreadsheet = IOFactory::load($path);
+        $this->assertSame(['Petunjuk', 'Kuantitatif', 'Contoh'], $spreadsheet->getSheetNames());
+
+        $sheet = $spreadsheet->getSheetByName('Kuantitatif');
+        $this->assertSame('order_number', $sheet->getCell('A1')->getValue());
+        foreach ([1, 'Berapakah $2 + 3$?', '$4$', '$5$', '$6$', '$7$', 'B'] as $index => $value) {
+            $sheet->setCellValue([$index + 1, 2], $value);
+        }
+        (new Xlsx($spreadsheet))->save($path);
+        $spreadsheet->disconnectWorksheets();
+
+        $this->post(
+            "/api/sections/{$kuantitatif->id}/questions/import",
+            ['file' => new UploadedFile($path, 'soal.xlsx', null, null, true)],
+            [...$headers, 'Accept' => 'application/json'],
+        )->assertCreated()->assertJsonPath('imported', 1);
+        $this->assertDatabaseHas('questions', ['exam_section_id' => $kuantitatif->id, 'question_text' => 'Berapakah $2 + 3$?']);
+
+        $this->post(
+            "/api/sections/{$verbal->id}/questions/import",
+            ['file' => new UploadedFile($path, 'soal.xlsx', null, null, true)],
+            [...$headers, 'Accept' => 'application/json'],
+        )->assertUnprocessable()->assertJsonValidationErrors('file');
+        $this->assertDatabaseCount('questions', 1);
+
+        @unlink($path);
     }
 
     public function test_image_upload_returns_public_url_only(): void

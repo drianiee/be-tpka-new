@@ -15,6 +15,11 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias(['role' => EnsureRole::class]);
+
+        // Backend ini murni API dan tidak punya rute "login". Tanpa baris ini Laravel
+        // mengalihkan tamu ke route('login') yang tidak ada, sehingga request tanpa
+        // header Accept: application/json berbalas 500, bukan 401.
+        $middleware->redirectGuestsTo(null);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

@@ -179,6 +179,7 @@ class ParticipantController extends Controller
                         'question_package_id' => $this->packageAssignments->pickRandomPackage($schedule)->id,
                     ]);
                 }
+
                 return $this->registrationResponse('Registration already approved.', $existing->load('payment'), null);
             }
             if ($existing->status === 'pending_payment') {

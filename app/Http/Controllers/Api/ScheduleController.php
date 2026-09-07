@@ -6,20 +6,20 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreScheduleRequest;
 use App\Models\ExamAttempt;
 use App\Models\ExamRegistration;
-use App\Models\Payment;
 use App\Models\Partner;
+use App\Models\Payment;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
-use App\Services\CertificateTemplateService;
 use App\Services\CertificateDataService;
+use App\Services\CertificateTemplateService;
 use App\Services\ExamAttemptService;
 use App\Services\PartnerInvitationService;
 use App\Services\QuestionPackageAssignmentService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Validation\ValidationException;
 
 class ScheduleController extends Controller
@@ -337,8 +337,7 @@ class ScheduleController extends Controller
         Schedule $s,
         ?LengthAwarePaginator $participantPage = null,
         ?Collection $attempts = null,
-    ): array
-    {
+    ): array {
         $start = $s->start_at;
         $attempts = $attempts ?? ($s->relationLoaded('attempts')
             ? $s->attempts->map(function (ExamAttempt $attempt) {
@@ -737,7 +736,7 @@ XML;
             return '<row r="'.($rowIndex + 1).'">'.$cells.'</row>';
         })->implode('');
 
-return <<<XML
+        return <<<XML
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <dimension ref="{$dimension}"/>
@@ -774,7 +773,7 @@ XML;
         ]));
 
         $data['question_package_id'] = ! empty($data['question_package_id']) ? $package->id : null;
-        $registrationCloseOffset = max(0, (int) env('REGISTRATION_CLOSE_OFFSET_MINUTES'));
+        $registrationCloseOffset = max(0, (int) config('app.registration_close_offset_minutes'));
         $data['registration_end_at'] = Carbon::parse($data['start_at'])->subMinutes($registrationCloseOffset);
         if (empty($data['end_at'])) {
             $data['end_at'] = Carbon::parse($data['start_at'])->addMinutes((int) $package->total_duration_minutes);
@@ -782,6 +781,8 @@ XML;
         if ($creating) {
             $data['title'] = 'Jadwal Tes - '.Carbon::parse($data['start_at'])->format('d/m/Y H:i');
             $data['status'] = 'published';
+            // Registrasi langsung dibuka saat jadwal dibuat.
+            $data['registration_start_at'] = $data['registration_start_at'] ?? now();
         }
         $data['is_partner'] = (bool) ($data['is_partner'] ?? false) || ! empty($data['partner_id']);
         if ($data['is_partner']) {

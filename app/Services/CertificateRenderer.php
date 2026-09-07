@@ -186,8 +186,7 @@ class CertificateRenderer
         int $height,
         array $imageUris = [],
         array $imageDimensions = []
-    ): string
-    {
+    ): string {
         $nodes = [];
         foreach ($fields as $key => $field) {
             if (! is_array($field)) {
@@ -203,6 +202,7 @@ class CertificateRenderer
                     (int) ($field['size'] ?? 160),
                     (int) ($field['size'] ?? 160),
                 );
+
                 continue;
             }
 
@@ -225,6 +225,7 @@ class CertificateRenderer
                     $fit['width'],
                     $fit['height'],
                 );
+
                 continue;
             }
 
@@ -443,6 +444,7 @@ class CertificateRenderer
             $paragraph = trim($paragraph);
             if ($paragraph === '') {
                 $lines[] = '';
+
                 continue;
             }
 
@@ -451,12 +453,14 @@ class CertificateRenderer
                 $candidate = $current === '' ? $word : $current.' '.$word;
                 if ($this->textWidth($candidate, $fontPath, $size) <= $maxWidth) {
                     $current = $candidate;
+
                     continue;
                 }
 
                 if ($current !== '') {
                     $lines[] = $current;
                     $current = $word;
+
                     continue;
                 }
 

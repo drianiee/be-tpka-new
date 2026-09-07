@@ -42,6 +42,6 @@ class EmailVerificationService
 
     private function frontendUrl(string $token): string
     {
-        return rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/').'/verify-email?token='.$token;
+        return rtrim((string) config('app.frontend_url'), '/').'/verify-email?token='.$token;
     }
 }
