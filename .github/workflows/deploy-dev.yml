@@ -7,26 +7,28 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
     steps:
       - name: Pull latest code
         run: |
-          cd /var/www/html/tpka-dev/be-tpka-new
+          cd "$DEPLOY_PATH"
           git pull origin dev
 
       - name: Rebuild and restart
         run: |
-          cd /var/www/html/tpka-dev/be-tpka-new
+          cd "$DEPLOY_PATH"
           docker compose -f docker-compose.dev.yml up -d --build
 
       - name: Fix storage permissions
         run: |
-          cd /var/www/html/tpka-dev/be-tpka-new
+          cd "$DEPLOY_PATH"
           chmod -R a+rwX storage bootstrap/cache
 
       - name: Check if migrations changed
         id: check
         run: |
-          cd /var/www/html/tpka-dev/be-tpka-new
+          cd "$DEPLOY_PATH"
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
@@ -40,7 +42,7 @@ jobs:
       - name: Run migrations
         if: steps.check.outputs.run_migrate == 'true'
         run: |
-          cd /var/www/html/tpka-dev/be-tpka-new
+          cd "$DEPLOY_PATH"
           docker compose -f docker-compose.dev.yml exec -T tpka_app php artisan migrate --force
 
       - name: Clean up old build leftovers
@@ -50,7 +52,7 @@ jobs:
 
       - name: Check deployment status
         run: |
-          cd /var/www/html/tpka-dev/be-tpka-new
+          cd "$DEPLOY_PATH"
           docker compose -f docker-compose.dev.yml ps
 
       - name: Check docker storage usage
