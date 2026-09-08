@@ -1,0 +1,58 @@
+name: Deploy dev (self-hosted)
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Pull latest code
+        run: |
+          cd /var/www/html/tpka-dev/be-tpka-new
+          git pull origin dev
+
+      - name: Rebuild and restart
+        run: |
+          cd /var/www/html/tpka-dev/be-tpka-new
+          docker compose -f docker-compose.dev.yml up -d --build
+
+      - name: Fix storage permissions
+        run: |
+          cd /var/www/html/tpka-dev/be-tpka-new
+          chmod -R a+rwX storage bootstrap/cache
+
+      - name: Check if migrations changed
+        id: check
+        run: |
+          cd /var/www/html/tpka-dev/be-tpka-new
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "run_migrate=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BEFORE" "$AFTER" -- database/migrations | grep -q .; then
+            echo "run_migrate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_migrate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run migrations
+        if: steps.check.outputs.run_migrate == 'true'
+        run: |
+          cd /var/www/html/tpka-dev/be-tpka-new
+          docker compose -f docker-compose.dev.yml exec -T tpka_app php artisan migrate --force
+
+      - name: Clean up old build leftovers
+        run: |
+          docker image prune -f
+          docker builder prune -f
+
+      - name: Check deployment status
+        run: |
+          cd /var/www/html/tpka-dev/be-tpka-new
+          docker compose -f docker-compose.dev.yml ps
+
+      - name: Check docker storage usage
+        run: |
+          docker system df
