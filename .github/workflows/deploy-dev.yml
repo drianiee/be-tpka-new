@@ -4,11 +4,12 @@ on:
   push:
     branches: [dev]
 
+env:
+  DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+
 jobs:
   deploy:
     runs-on: self-hosted
-    env:
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
     steps:
       - name: Pull latest code
         run: |
@@ -23,8 +24,12 @@ jobs:
       - name: Fix storage permissions
         run: |
           cd "$DEPLOY_PATH"
-          chmod -R a+rwX storage bootstrap/cache
+          docker compose -f docker-compose.dev.yml exec -T -u root tpka_app chmod -R a+rwX storage bootstrap/cache
 
+  migrate:
+    needs: deploy
+    runs-on: self-hosted
+    steps:
       - name: Check if migrations changed
         id: check
         run: |
@@ -45,11 +50,20 @@ jobs:
           cd "$DEPLOY_PATH"
           docker compose -f docker-compose.dev.yml exec -T tpka_app php artisan migrate --force
 
+  cleanup:
+    needs: [deploy, migrate]
+    if: always()
+    runs-on: self-hosted
+    steps:
       - name: Clean up old build leftovers
         run: |
           docker image prune -f
           docker builder prune -f
 
+  verify:
+    needs: cleanup
+    runs-on: self-hosted
+    steps:
       - name: Check deployment status
         run: |
           cd "$DEPLOY_PATH"
