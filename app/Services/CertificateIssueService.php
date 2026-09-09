@@ -127,7 +127,7 @@ class CertificateIssueService
         return [
             'participant_name' => $registration->user?->name,
             'certificate_no' => $registration->certificate_no,
-            'exam_date' => $registration->schedule?->start_at?->translatedFormat('d F Y'),
+            'exam_date' => $registration->schedule?->start_at?->locale('id')->translatedFormat('d F Y'),
             'score_verbal' => $this->formatScore($scores['verbal'] ?? 0),
             'score_kuantitatif' => $this->formatScore($scores['kuantitatif'] ?? 0),
             'score_logika' => $this->formatScore($scores['logika'] ?? 0),
