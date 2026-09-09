@@ -20,6 +20,14 @@ return Application::configure(basePath: dirname(__DIR__))
         // mengalihkan tamu ke route('login') yang tidak ada, sehingga request tanpa
         // header Accept: application/json berbalas 500, bukan 401.
         $middleware->redirectGuestsTo(null);
+
+        // IP gateway nginx->container beda tiap docker network (dev vs prod punya
+        // network terpisah, tpka_shared_dev vs tpka_shared_prod), jadi nilainya
+        // diambil dari .env (TRUSTED_PROXY_IP), bukan di-hardcode di sini — biar kode
+        // ini sama persis dipakai dev maupun prod, cuma beda config. Cek IP gateway
+        // aktual per environment: `docker network inspect <nama_network> | grep -i
+        // gateway`.
+        $middleware->trustProxies(at: [env('TRUSTED_PROXY_IP', '127.0.0.1')]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
