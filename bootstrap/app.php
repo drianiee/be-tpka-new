@@ -16,6 +16,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias(['role' => EnsureRole::class]);
 
+        // Aplikasi berjalan di belakang reverse proxy. Tanpa ini Laravel mengabaikan
+        // header X-Forwarded-Proto, sehingga URL yang dibangkitkan memakai http
+        // padahal pengunjung mengaksesnya lewat https.
+        $middleware->trustProxies(at: '*');
+
         // Backend ini murni API dan tidak punya rute "login". Tanpa baris ini Laravel
         // mengalihkan tamu ke route('login') yang tidak ada, sehingga request tanpa
         // header Accept: application/json berbalas 500, bukan 401.
