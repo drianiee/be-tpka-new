@@ -35,11 +35,11 @@ class QuestionImportTemplate
     /** Label ramah untuk tiap kolom teknis. */
     private const COLUMN_LABELS = [
         'order_number' => ['Nomor Urut', 'Boleh dikosongkan. Hanya menentukan urutan antar baris di file ini; nomor soal di sistem otomatis melanjutkan soal yang sudah ada.'],
-        'question_text' => ['Pertanyaan', 'Wajib diisi. Soal bergambar tidak lewat file ini, tambahkan langsung di sistem.'],
-        'option_a_text' => ['Pilihan A', 'Wajib diisi.'],
-        'option_b_text' => ['Pilihan B', 'Wajib diisi.'],
-        'option_c_text' => ['Pilihan C', 'Wajib diisi.'],
-        'option_d_text' => ['Pilihan D', 'Wajib diisi.'],
+        'question_text' => ['Pertanyaan', 'Wajib diisi.'],
+        'option_a_text' => ['Pilihan A', 'Boleh dikosongkan kalau pilihan jawabannya berupa gambar. Gambarnya dilengkapi lewat form Edit soal.'],
+        'option_b_text' => ['Pilihan B', 'Boleh dikosongkan kalau pilihan jawabannya berupa gambar. Gambarnya dilengkapi lewat form Edit soal.'],
+        'option_c_text' => ['Pilihan C', 'Boleh dikosongkan kalau pilihan jawabannya berupa gambar. Gambarnya dilengkapi lewat form Edit soal.'],
+        'option_d_text' => ['Pilihan D', 'Boleh dikosongkan kalau pilihan jawabannya berupa gambar. Gambarnya dilengkapi lewat form Edit soal.'],
         'correct_option' => ['Kunci Jawaban', 'Wajib. Pilih dari dropdown: A, B, C, atau D.'],
     ];
 
@@ -95,7 +95,9 @@ class QuestionImportTemplate
         ],
         'spasial' => [
             [1, 'Sebuah kubus dipotong pada salah satu sudutnya. Berapa jumlah sisi bangun yang terbentuk?', '6', '7', '8', '9', 'B'],
-            [2, 'Jika sebuah persegi diputar 90 derajat searah jarum jam, bentuknya menjadi ...', 'Belah ketupat', 'Persegi panjang', 'Tetap persegi', 'Jajar genjang', 'C'],
+            // Pilihan jawaban dikosongkan: gambarnya dilengkapi lewat form Edit soal.
+            [2, 'Bangun manakah yang merupakan hasil putaran gambar di atas?', '', '', '', '', 'A'],
+            [3, 'Jaring-jaring manakah yang dapat membentuk kubus tersebut?', '', '', '', '', 'C'],
         ],
     ];
 
@@ -344,9 +346,9 @@ class QuestionImportTemplate
         $this->writeHeading($sheet, 'B'.$row, 'Soal Bergambar');
         $row++;
         foreach ([
-            'File ini khusus untuk soal berbentuk teks. Tidak ada kolom gambar di sini.',
-            'Soal atau pilihan jawaban yang memakai gambar ditambahkan langsung di sistem lewat tombol Tambah Soal, karena gambarnya perlu diunggah satu per satu.',
-            'Kedua cara itu bisa dipakai bersamaan pada subtes yang sama.',
+            'File ini tidak punya kolom gambar, karena gambar perlu diunggah satu per satu.',
+            'Untuk soal yang pilihan jawabannya berupa gambar: isi kolom Pertanyaan dan Kunci Jawaban, lalu biarkan keempat kolom pilihan kosong. Soalnya tetap terimport, dan gambar tiap pilihan dilengkapi lewat tombol Edit pada soal tersebut.',
+            'Kalau soal itu sendiri berupa gambar, tambahkan lewat tombol Tambah Soal karena kolom Pertanyaan wajib berisi teks.',
         ] as $note) {
             $sheet->setCellValue('C'.$row, $note);
             $row++;
@@ -357,7 +359,8 @@ class QuestionImportTemplate
         $row++;
         foreach ([
             'Import bersifat semua-atau-tidak-sama-sekali. Kalau ada satu baris salah, tidak ada soal yang tersimpan.',
-            'Pertanyaan dan keempat pilihan jawaban wajib diisi semua.',
+            'Yang wajib hanya kolom Pertanyaan dan Kunci Jawaban.',
+            'Kolom pilihan jawaban boleh dikosongkan kalau pilihannya berupa gambar, seperti pada subtes Spasial. Soalnya tetap masuk, lalu gambar tiap pilihan dilengkapi lewat tombol Edit pada soal itu.',
             'Nomor Urut tidak menimpa soal yang sudah ada di sistem. Soal hasil import selalu ditambahkan di belakang.',
             'Jangan mengganti nama sheet "'.$section->name.'". Nama sheet itulah yang menentukan soal masuk ke subtes mana.',
             'Kalau satu file memuat beberapa sheet, tiap sheet dinilai sendiri. Sheet yang bersih tersimpan, sheet bermasalah ditolak tanpa menggagalkan yang lain.',

@@ -237,6 +237,38 @@ class QuestionBankTest extends TestCase
         @unlink($path);
     }
 
+    public function test_import_accepts_blank_options_for_image_based_questions(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $headers = $this->headersFor('admin@tpka.com');
+        $package = $this->createPackage($headers);
+        $spasial = ExamSection::where('question_package_id', $package->id)->where('code', 'spasial')->firstOrFail();
+
+        $file = UploadedFile::fake()->createWithContent('soal.csv', implode("\n", [
+            'order_number,question_text,option_a_text,option_b_text,option_c_text,option_d_text,correct_option',
+            '1,"Bangun manakah hasil putaran gambar di atas?",,,,,A',
+        ])."\n");
+
+        $this->post("/api/sections/{$spasial->id}/questions/import", ['file' => $file], [...$headers, 'Accept' => 'application/json'])
+            ->assertCreated()
+            ->assertJsonPath('imported', 1)
+            ->assertJsonPath('results.0.blank_options', 1);
+
+        $question = Question::where('exam_section_id', $spasial->id)->with('options')->firstOrFail();
+        $this->assertCount(4, $question->options);
+        $this->assertNull($question->options->firstWhere('option_label', 'A')->option_text);
+        $this->assertSame('A', $question->options->firstWhere('is_correct', true)->option_label);
+
+        // Pertanyaan tetap wajib, dan kunci jawaban tetap wajib.
+        $tanpaPertanyaan = UploadedFile::fake()->createWithContent('soal.csv', implode("\n", [
+            'order_number,question_text,option_a_text,option_b_text,option_c_text,option_d_text,correct_option',
+            '2,,,,,,A',
+        ])."\n");
+        $this->post("/api/sections/{$spasial->id}/questions/import", ['file' => $tanpaPertanyaan], [...$headers, 'Accept' => 'application/json'])
+            ->assertUnprocessable();
+        $this->assertSame(1, Question::where('exam_section_id', $spasial->id)->count());
+    }
+
     public function test_import_rejects_file_without_any_filled_row(): void
     {
         $this->seed(DatabaseSeeder::class);

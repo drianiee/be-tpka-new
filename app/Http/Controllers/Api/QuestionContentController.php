@@ -161,6 +161,8 @@ class QuestionContentController extends Controller
             default => 422,
         };
 
+        $perluGambar = collect($result['results'])->sum(fn (array $row) => $row['blank_options'] ?? 0);
+
         $ringkasan = collect($result['results'])
             ->filter(fn (array $row) => $row['imported'] > 0)
             ->map(fn (array $row) => $row['imported'].' soal '.$row['section'])
@@ -168,7 +170,8 @@ class QuestionContentController extends Controller
 
         return response()->json([
             'message' => match ($status) {
-                201 => 'Import berhasil: '.$ringkasan.'.',
+                201 => 'Import berhasil: '.$ringkasan.'.'
+                    .($perluGambar > 0 ? ' '.$perluGambar.' soal belum punya teks pilihan, lengkapi gambarnya lewat tombol Edit.' : ''),
                 200 => 'Sebagian berhasil: '.$ringkasan.'. Sheet lain ditolak, periksa daftar error.',
                 default => 'Import gagal, tidak ada soal yang disimpan.',
             },

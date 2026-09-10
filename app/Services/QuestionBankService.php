@@ -91,7 +91,12 @@ class QuestionBankService
         ];
     }
 
-    public function normalizeQuestionPayload(array $data, QuestionPackage $package): array
+    /**
+     * @param  bool  $allowBlankOptions  Dipakai jalur import: soal spasial memakai gambar
+     *                                   pada pilihan jawaban, dan gambar tidak bisa dibawa
+     *                                   lewat file tabel. Form manual tetap ketat.
+     */
+    public function normalizeQuestionPayload(array $data, QuestionPackage $package, bool $allowBlankOptions = false): array
     {
         $section = $package->sections()->whereKey($data['exam_section_id'])->first();
         if (! $section) {
@@ -139,9 +144,11 @@ class QuestionBankService
             throw ValidationException::withMessages(['options' => 'Opsi wajib tepat A, B, C, dan D.']);
         }
 
-        foreach ($options as $option) {
-            if (blank($option['option_text']) && blank($option['option_image'])) {
-                throw ValidationException::withMessages(['options' => "Opsi {$option['option_label']} wajib memiliki teks atau gambar."]);
+        if (! $allowBlankOptions) {
+            foreach ($options as $option) {
+                if (blank($option['option_text']) && blank($option['option_image'])) {
+                    throw ValidationException::withMessages(['options' => "Opsi {$option['option_label']} wajib memiliki teks atau gambar."]);
+                }
             }
         }
 
@@ -159,9 +166,9 @@ class QuestionBankService
         return $data;
     }
 
-    public function createQuestion(QuestionPackage $package, array $data): Question
+    public function createQuestion(QuestionPackage $package, array $data, bool $allowBlankOptions = false): Question
     {
-        $data = $this->normalizeQuestionPayload($data, $package);
+        $data = $this->normalizeQuestionPayload($data, $package, $allowBlankOptions);
         $options = $data['options'];
         unset($data['options']);
 
@@ -218,7 +225,7 @@ class QuestionBankService
 
         foreach ($targets as $target) {
             $outcome = $target['errors'] !== []
-                ? ['imported' => 0, 'errors' => $target['errors']]
+                ? ['imported' => 0, 'errors' => $target['errors'], 'blank_options' => 0]
                 : $this->importSheet($target['section'], $target['rows'], $target['sheet']);
 
             $imported += $outcome['imported'];
@@ -228,6 +235,7 @@ class QuestionBankService
                 'section' => $target['section']->name,
                 'imported' => $outcome['imported'],
                 'failed' => count($outcome['errors']),
+                'blank_options' => $outcome['blank_options'],
             ];
         }
 
@@ -262,16 +270,17 @@ class QuestionBankService
                 $errors[] = ['sheet' => $sheetName, 'row' => $rowNumber, 'field' => 'question_text', 'message' => 'Pertanyaan wajib diisi. Soal bergambar ditambahkan lewat tombol Tambah Soal.'];
             }
 
-            foreach (['a', 'b', 'c', 'd'] as $label) {
-                if (blank($row["option_{$label}_text"] ?? null)) {
-                    $errors[] = ['sheet' => $sheetName, 'row' => $rowNumber, 'field' => "option_{$label}_text", 'message' => 'Semua pilihan jawaban wajib diisi.'];
-                }
-            }
         }
 
         if ($errors !== []) {
-            return ['imported' => 0, 'errors' => $errors];
+            return ['imported' => 0, 'errors' => $errors, 'blank_options' => 0];
         }
+
+        // Soal yang seluruh pilihannya kosong perlu dilengkapi gambar lewat form edit.
+        $blankOptions = collect($rows)
+            ->filter(fn (array $row) => collect(['a', 'b', 'c', 'd'])
+                ->every(fn (string $label) => blank($row["option_{$label}_text"] ?? null)))
+            ->count();
 
         // order_number di file hanya menentukan urutan antar baris di dalam file itu.
         // Nomor akhirnya selalu melanjutkan soal yang sudah ada, supaya tidak bentrok.
@@ -296,11 +305,11 @@ class QuestionBankService
                         'is_correct' => $label === $correct,
                         'order_number' => $i + 1,
                     ])->all(),
-                ]);
+                ], allowBlankOptions: true);
             }
         });
 
-        return ['imported' => count($rows), 'errors' => []];
+        return ['imported' => count($rows), 'errors' => [], 'blank_options' => $blankOptions];
     }
 
     public function refreshCounts(QuestionPackage $package): void
@@ -438,6 +447,19 @@ class QuestionBankService
      */
     private function readSpreadsheetTables(UploadedFile $file, ExamSection $fallbackSection): array
     {
+        // Masalah deployment, bukan masalah file yang diunggah. Dibedakan supaya admin
+        // tidak menyangka filenya rusak. Terjadi kalau composer install belum dijalankan
+        // setelah dependensi baru ditambahkan.
+        if (! class_exists(IOFactory::class)) {
+            Log::critical('Pustaka PhpSpreadsheet tidak tersedia, import Excel tidak bisa jalan.');
+
+            throw ValidationException::withMessages([
+                'file' => 'Pembaca Excel belum terpasang di server, jadi file .xlsx belum bisa diproses. '
+                    .'Hubungi pengelola server untuk menjalankan "composer install". '
+                    .'Sementara itu, soal masih bisa diunggah dalam format .csv.',
+            ]);
+        }
+
         $path = (string) $file->getRealPath();
         $size = is_file($path) ? (int) filesize($path) : 0;
 
