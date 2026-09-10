@@ -7,6 +7,7 @@ use App\Models\Question;
 use App\Models\QuestionPackage;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
@@ -437,12 +438,53 @@ class QuestionBankService
      */
     private function readSpreadsheetTables(UploadedFile $file, ExamSection $fallbackSection): array
     {
+        $path = (string) $file->getRealPath();
+        $size = is_file($path) ? (int) filesize($path) : 0;
+
+        if ($size === 0) {
+            throw ValidationException::withMessages([
+                'file' => 'File yang diunggah kosong (0 byte). Kemungkinan gagal terunggah, coba pilih ulang filenya.',
+            ]);
+        }
+
+        // File .xlsx sejatinya arsip zip dan selalu diawali "PK". Kalau tidak, biasanya
+        // file itu sebenarnya CSV yang namanya diberi akhiran .xlsx.
+        $extension = strtolower($file->getClientOriginalExtension() ?: 'xlsx');
+        $signature = (string) file_get_contents($path, false, null, 0, 2);
+
+        if ($extension !== 'xls' && $signature !== 'PK') {
+            Log::warning('File import bukan arsip xlsx, dicoba dibaca sebagai CSV.', [
+                'nama' => $file->getClientOriginalName(),
+                'ukuran' => $size,
+                'signature' => bin2hex($signature),
+            ]);
+
+            return [[
+                'section' => $fallbackSection,
+                'sheet' => $fallbackSection->name,
+                'table' => $this->readCsvTable($file),
+            ]];
+        }
+
         try {
-            $reader = IOFactory::createReaderForFile($file->getRealPath());
+            // Reader dipilih dari ekstensi, bukan lewat createReaderForFile(), supaya file
+            // xlsx yang rusak tidak diam-diam jatuh ke pembaca CSV dan memunculkan
+            // error kolom yang menyesatkan.
+            $reader = IOFactory::createReader($extension === 'xls' ? 'Xls' : 'Xlsx');
             $reader->setReadDataOnly(true);
-            $spreadsheet = $reader->load($file->getRealPath());
-        } catch (\Throwable) {
-            throw ValidationException::withMessages(['file' => 'File Excel tidak dapat dibaca. Pastikan formatnya .xlsx dan tidak rusak.']);
+            $spreadsheet = $reader->load($path);
+        } catch (\Throwable $e) {
+            Log::error('Gagal membaca file import Excel.', [
+                'nama' => $file->getClientOriginalName(),
+                'ukuran' => $size,
+                'mime' => $file->getMimeType(),
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+
+            throw ValidationException::withMessages([
+                'file' => 'File Excel tidak dapat dibaca ('.$e->getMessage().'). Coba buka filenya di Excel lalu simpan ulang lewat Save As dengan format .xlsx.',
+            ]);
         }
 
         $sections = $fallbackSection->package->sections;
