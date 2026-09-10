@@ -50,6 +50,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('sections/{section}', [QuestionContentController::class, 'deleteSection']);
         Route::get('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'questions']);
         Route::post('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'storePackageQuestion']);
+        Route::get('question-packages/{questionPackage}/questions/export', [QuestionContentController::class, 'exportQuestions']);
         Route::get('sections/{section}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
         Route::post('sections/{section}/questions/import', [QuestionContentController::class, 'importQuestions']);
         Route::get('questions/{question}', [QuestionContentController::class, 'showQuestion']);
@@ -160,7 +161,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::delete('sections/{section}', [QuestionContentController::class, 'deleteSection']);
             Route::get('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'questions']);
             Route::post('question-packages/{questionPackage}/questions', [QuestionContentController::class, 'storePackageQuestion']);
-            Route::get('sections/{section}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
+            Route::get('question-packages/{questionPackage}/questions/export', [QuestionContentController::class, 'exportQuestions']);
+        Route::get('sections/{section}/questions/import-template', [QuestionContentController::class, 'importTemplate']);
             Route::post('sections/{section}/questions/import', [QuestionContentController::class, 'importQuestions']);
             Route::get('questions', [QuestionContentController::class, 'questions']);
             Route::post('questions', [QuestionContentController::class, 'storeQuestion']);

@@ -137,16 +137,41 @@ class QuestionContentController extends Controller
         ]);
     }
 
+    public function exportQuestions(QuestionPackage $questionPackage)
+    {
+        $contents = (new QuestionImportTemplate)->buildPackageExport($questionPackage);
+        $filename = 'soal-'.Str::slug($questionPackage->name ?: 'paket').'.xlsx';
+
+        return response($contents, 200, [
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+            'Content-Length' => (string) strlen($contents),
+        ]);
+    }
+
     public function importQuestions(Request $request, ExamSection $section)
     {
         $data = $request->validate(['file' => ['required', 'file', 'extensions:xlsx,xls,csv,txt', 'max:10240']]);
         $result = $this->questionBank->importRows($section, $data['file']);
-        $status = $result['errors'] === [] ? 201 : 422;
+
+        // Import atomik per sheet, jadi sebagian bisa berhasil sementara sisanya ditolak.
+        $status = match (true) {
+            $result['errors'] === [] => 201,
+            $result['imported'] > 0 => 200,
+            default => 422,
+        };
+
+        $ringkasan = collect($result['results'])
+            ->filter(fn (array $row) => $row['imported'] > 0)
+            ->map(fn (array $row) => $row['imported'].' soal '.$row['section'])
+            ->implode(', ');
 
         return response()->json([
-            'message' => $status === 201
-                ? 'Import soal '.$section->name.' berhasil.'
-                : 'Import gagal, periksa error per baris.',
+            'message' => match ($status) {
+                201 => 'Import berhasil: '.$ringkasan.'.',
+                200 => 'Sebagian berhasil: '.$ringkasan.'. Sheet lain ditolak, periksa daftar error.',
+                default => 'Import gagal, tidak ada soal yang disimpan.',
+            },
             ...$result,
         ], $status);
     }

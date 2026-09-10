@@ -8,11 +8,13 @@ use App\Models\Question;
 use App\Models\QuestionPackage;
 use App\Models\Schedule;
 use App\Models\User;
+use App\Services\QuestionBankService;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use Tests\TestCase;
 
@@ -106,7 +108,154 @@ class QuestionBankTest extends TestCase
         $this->assertDatabaseCount('questions', 1);
     }
 
-    public function test_template_is_scoped_to_one_section_and_rejects_other_section_file(): void
+    public function test_import_appends_after_existing_questions_regardless_of_order_column(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $headers = $this->headersFor('admin@tpka.com');
+        $package = $this->createPackage($headers);
+        $verbal = ExamSection::where('question_package_id', $package->id)->where('code', 'verbal')->firstOrFail();
+
+        $header = 'order_number,question_text,option_a_text,option_b_text,option_c_text,option_d_text,correct_option';
+
+        $first = UploadedFile::fake()->createWithContent('soal.csv', implode("\n", [
+            $header,
+            '1,"Soal lama satu",A,B,C,D,A',
+            '2,"Soal lama dua",A,B,C,D,A',
+        ])."\n");
+        $this->post("/api/sections/{$verbal->id}/questions/import", ['file' => $first], [...$headers, 'Accept' => 'application/json'])
+            ->assertCreated();
+
+        // Nomor 1-3 diulang lagi: harus jadi 3,4,5, bukan bentrok dengan yang sudah ada.
+        $second = UploadedFile::fake()->createWithContent('soal.csv', implode("\n", [
+            $header,
+            '3,"Import ketiga",A,B,C,D,A',
+            '1,"Import pertama",A,B,C,D,A',
+            '2,"Import kedua",A,B,C,D,A',
+        ])."\n");
+        $this->post("/api/sections/{$verbal->id}/questions/import", ['file' => $second], [...$headers, 'Accept' => 'application/json'])
+            ->assertCreated();
+
+        $ordered = Question::where('exam_section_id', $verbal->id)
+            ->orderBy('order_number')
+            ->pluck('question_text', 'order_number')
+            ->all();
+
+        $this->assertSame([
+            1 => 'Soal lama satu',
+            2 => 'Soal lama dua',
+            3 => 'Import pertama',
+            4 => 'Import kedua',
+            5 => 'Import ketiga',
+        ], $ordered);
+    }
+
+    public function test_one_file_can_fill_several_sections_and_a_broken_sheet_is_rejected_alone(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $headers = $this->headersFor('admin@tpka.com');
+        $package = $this->createPackage($headers);
+        $verbal = ExamSection::where('question_package_id', $package->id)->where('code', 'verbal')->firstOrFail();
+        $logika = ExamSection::where('question_package_id', $package->id)->where('code', 'logika')->firstOrFail();
+
+        $path = tempnam(sys_get_temp_dir(), 'multi').'.xlsx';
+        $spreadsheet = new Spreadsheet;
+        $spreadsheet->removeSheetByIndex(0);
+
+        $sheets = [
+            // Verbal bersih, Logika punya kunci jawaban ngawur di baris ketiga.
+            'Verbal' => [[1, 'Verbal satu', 'A', 'B', 'C', 'D', 'A']],
+            'Logika' => [[1, 'Logika satu', 'A', 'B', 'C', 'D', 'B'], [2, 'Logika dua', 'A', 'B', 'C', 'D', 'Z']],
+        ];
+
+        foreach ($sheets as $title => $rows) {
+            $sheet = $spreadsheet->createSheet();
+            $sheet->setTitle($title);
+            foreach (QuestionBankService::IMPORT_COLUMNS as $index => $column) {
+                $sheet->setCellValue([$index + 1, 1], $column);
+            }
+            foreach ($rows as $rowIndex => $values) {
+                foreach ($values as $columnIndex => $value) {
+                    $sheet->setCellValue([$columnIndex + 1, $rowIndex + 2], $value);
+                }
+            }
+        }
+        (new Xlsx($spreadsheet))->save($path);
+        $spreadsheet->disconnectWorksheets();
+
+        $this->post(
+            "/api/sections/{$verbal->id}/questions/import",
+            ['file' => new UploadedFile($path, 'soal.xlsx', null, null, true)],
+            [...$headers, 'Accept' => 'application/json'],
+        )
+            ->assertOk()
+            ->assertJsonPath('imported', 1);
+
+        $this->assertSame(1, Question::where('exam_section_id', $verbal->id)->count());
+        $this->assertSame(0, Question::where('exam_section_id', $logika->id)->count());
+
+        @unlink($path);
+    }
+
+    public function test_export_produces_a_file_that_can_be_imported_into_another_package(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $headers = $this->headersFor('admin@tpka.com');
+        $source = $this->createPackage($headers);
+        $verbal = ExamSection::where('question_package_id', $source->id)->where('code', 'verbal')->firstOrFail();
+
+        $seed = UploadedFile::fake()->createWithContent('soal.csv', implode("\n", [
+            'order_number,question_text,option_a_text,option_b_text,option_c_text,option_d_text,correct_option',
+            '1,"Sinonim cepat adalah?",Lekas,Lambat,Diam,Turun,A',
+            '2,"Lawan kata gersang?",Tandus,Subur,Kering,Panas,B',
+        ])."\n");
+        $this->post("/api/sections/{$verbal->id}/questions/import", ['file' => $seed], [...$headers, 'Accept' => 'application/json'])
+            ->assertCreated();
+
+        $response = $this->get("/api/question-packages/{$source->id}/questions/export", $headers)->assertOk();
+        $this->assertStringContainsString('.xlsx', (string) $response->headers->get('content-disposition'));
+
+        $path = tempnam(sys_get_temp_dir(), 'export').'.xlsx';
+        file_put_contents($path, $response->getContent());
+
+        $spreadsheet = IOFactory::load($path);
+        $this->assertContains('Verbal', $spreadsheet->getSheetNames());
+        $this->assertSame('Sinonim cepat adalah?', $spreadsheet->getSheetByName('Verbal')->getCell('B2')->getValue());
+        $spreadsheet->disconnectWorksheets();
+
+        // File hasil ekspor harus bisa langsung dipakai untuk mengisi paket lain.
+        $target = $this->createPackage($headers, 'Paket Hasil Salinan');
+        $targetVerbal = ExamSection::where('question_package_id', $target->id)->where('code', 'verbal')->firstOrFail();
+
+        $this->post(
+            "/api/sections/{$targetVerbal->id}/questions/import",
+            ['file' => new UploadedFile($path, 'soal-paket.xlsx', null, null, true)],
+            [...$headers, 'Accept' => 'application/json'],
+        )->assertCreated()->assertJsonPath('imported', 2);
+
+        $this->assertSame(2, Question::where('exam_section_id', $targetVerbal->id)->count());
+
+        @unlink($path);
+    }
+
+    public function test_import_rejects_file_without_any_filled_row(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $headers = $this->headersFor('admin@tpka.com');
+        $package = $this->createPackage($headers);
+        $verbal = ExamSection::where('question_package_id', $package->id)->where('code', 'verbal')->firstOrFail();
+
+        $empty = UploadedFile::fake()->createWithContent(
+            'soal.csv',
+            "order_number,question_text,option_a_text,option_b_text,option_c_text,option_d_text,correct_option\n",
+        );
+
+        $this->post("/api/sections/{$verbal->id}/questions/import", ['file' => $empty], [...$headers, 'Accept' => 'application/json'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('file');
+        $this->assertDatabaseCount('questions', 0);
+    }
+
+    public function test_sheet_name_decides_the_target_section(): void
     {
         $this->seed(DatabaseSeeder::class);
         $headers = $this->headersFor('admin@tpka.com');
@@ -138,12 +287,15 @@ class QuestionBankTest extends TestCase
         )->assertCreated()->assertJsonPath('imported', 1);
         $this->assertDatabaseHas('questions', ['exam_section_id' => $kuantitatif->id, 'question_text' => 'Berapakah $2 + 3$?']);
 
+        // Nama sheet yang menentukan tujuan, bukan tombol yang diklik: file bersheet
+        // Kuantitatif tetap masuk ke Kuantitatif walau diimport dari tab Verbal.
         $this->post(
             "/api/sections/{$verbal->id}/questions/import",
             ['file' => new UploadedFile($path, 'soal.xlsx', null, null, true)],
             [...$headers, 'Accept' => 'application/json'],
-        )->assertUnprocessable()->assertJsonValidationErrors('file');
-        $this->assertDatabaseCount('questions', 1);
+        )->assertCreated()->assertJsonPath('imported', 1);
+        $this->assertSame(2, Question::where('exam_section_id', $kuantitatif->id)->count());
+        $this->assertSame(0, Question::where('exam_section_id', $verbal->id)->count());
 
         @unlink($path);
     }
@@ -227,10 +379,10 @@ class QuestionBankTest extends TestCase
         return ['Authorization' => 'Bearer '.$login->json('token')];
     }
 
-    private function createPackage(array $headers): QuestionPackage
+    private function createPackage(array $headers, string $name = 'Paket TPA Test'): QuestionPackage
     {
         $id = $this->postJson('/api/question-packages', [
-            'name' => 'Paket TPA Test',
+            'name' => $name,
             'total_duration_minutes' => 120,
         ], $headers)->assertCreated()->json('data.id');
 

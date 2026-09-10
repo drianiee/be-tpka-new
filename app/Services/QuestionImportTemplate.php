@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\ExamSection;
+use App\Models\Question;
+use App\Models\QuestionPackage;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Cell\DataType;
 use PhpOffice\PhpSpreadsheet\Cell\DataValidation;
@@ -32,7 +34,7 @@ class QuestionImportTemplate
 
     /** Label ramah untuk tiap kolom teknis. */
     private const COLUMN_LABELS = [
-        'order_number' => ['Nomor Urut', 'Boleh dikosongkan. Kalau kosong, soal diurutkan otomatis di belakang.'],
+        'order_number' => ['Nomor Urut', 'Boleh dikosongkan. Hanya menentukan urutan antar baris di file ini; nomor soal di sistem otomatis melanjutkan soal yang sudah ada.'],
         'question_text' => ['Pertanyaan', 'Wajib diisi. Soal bergambar tidak lewat file ini, tambahkan langsung di sistem.'],
         'option_a_text' => ['Pilihan A', 'Wajib diisi.'],
         'option_b_text' => ['Pilihan B', 'Wajib diisi.'],
@@ -126,6 +128,120 @@ class QuestionImportTemplate
         return $contents;
     }
 
+    /**
+     * Ekspor seluruh soal paket ke format yang sama dengan template import:
+     * satu sheet per subtes, siap diedit lalu diimport ke paket lain.
+     */
+    public function buildPackageExport(QuestionPackage $package): string
+    {
+        $sections = $package->sections()->orderBy('order_number')->get();
+
+        $spreadsheet = new Spreadsheet;
+        $spreadsheet->getProperties()
+            ->setTitle('Soal '.$package->name)
+            ->setSubject($package->name)
+            ->setDescription('Salinan soal paket '.$package->name.' dalam format import.');
+
+        $this->buildExportGuideSheet($spreadsheet->getActiveSheet(), $package, $sections);
+
+        foreach ($sections as $section) {
+            $this->buildQuestionSheet($spreadsheet->createSheet(), $section, true, $this->exportRows($section));
+        }
+
+        $spreadsheet->setActiveSheetIndex(0);
+
+        $temporaryFile = tempnam(sys_get_temp_dir(), 'tpa-export-');
+        (new Xlsx($spreadsheet))->save($temporaryFile);
+        $contents = (string) file_get_contents($temporaryFile);
+        @unlink($temporaryFile);
+        $spreadsheet->disconnectWorksheets();
+
+        return $contents;
+    }
+
+    /** @return array<int, array<int, string|int|null>> */
+    private function exportRows(ExamSection $section): array
+    {
+        return $section->questions()
+            ->with('options')
+            ->orderBy('order_number')
+            ->get()
+            ->values()
+            ->map(function (Question $question, int $index) {
+                $option = fn (string $label) => $question->options
+                    ->firstWhere('option_label', $label)?->option_text ?? '';
+
+                return [
+                    $index + 1,
+                    (string) $question->question_text,
+                    $option('A'),
+                    $option('B'),
+                    $option('C'),
+                    $option('D'),
+                    $question->options->firstWhere('is_correct', true)?->option_label ?? '',
+                ];
+            })
+            ->all();
+    }
+
+    private function buildExportGuideSheet(Worksheet $sheet, QuestionPackage $package, $sections): void
+    {
+        $sheet->setTitle('Petunjuk');
+        $sheet->setShowGridlines(false);
+        $sheet->getColumnDimension('A')->setWidth(3);
+        $sheet->getColumnDimension('B')->setWidth(26);
+        $sheet->getColumnDimension('C')->setWidth(78);
+        $sheet->getColumnDimension('D')->setWidth(30);
+
+        $row = 2;
+        $this->writeTitle($sheet, 'B'.$row, 'Salinan Soal — '.$package->name);
+        $row++;
+        $this->writeMuted($sheet, 'B'.$row, 'Diunduh '.now()->locale('id')->translatedFormat('d F Y H:i'));
+        $row += 2;
+
+        $this->writeHeading($sheet, 'B'.$row, 'Isi File Ini');
+        $row++;
+        $this->writeTableHeader($sheet, $row, ['Sheet', 'Jumlah soal', '']);
+        $row++;
+        $tableStart = $row;
+        foreach ($sections as $section) {
+            $sheet->setCellValue('B'.$row, $this->safeSheetTitle($section->name));
+            $sheet->setCellValue('C'.$row, (int) $section->questions()->count().' soal (jatah '.(int) $section->target_question_count.')');
+            $row++;
+        }
+        $this->styleTableBody($sheet, $tableStart, $row - 1);
+        $row += 2;
+
+        $this->writeHeading($sheet, 'B'.$row, 'Cara Memakai Ulang');
+        $row++;
+        foreach ([
+            'File ini formatnya sama dengan template import, jadi bisa langsung diunggah kembali.',
+            'Ubah soal yang perlu diubah, hapus baris yang tidak dipakai, atau tambah baris baru di bawahnya.',
+            'Buat paket soal baru di sistem, lalu unggah file ini lewat tombol Import Soal. Semua sheet masuk ke subtesnya sendiri dalam sekali unggah.',
+        ] as $index => $step) {
+            $sheet->setCellValue('B'.$row, 'Langkah '.($index + 1));
+            $sheet->getStyle('B'.$row)->getFont()->setBold(true);
+            $sheet->setCellValue('C'.$row, $step);
+            $row++;
+        }
+        $row += 2;
+
+        $this->writeHeading($sheet, 'B'.$row, 'Perlu Diingat');
+        $row++;
+        foreach ([
+            'Import selalu MENAMBAH soal, tidak pernah menimpa. Jangan mengunggah file ini kembali ke paket yang sama, karena soalnya akan jadi dobel.',
+            'Kolom Nomor Urut hanya menentukan urutan di dalam file. Nomor di sistem otomatis melanjutkan soal yang sudah ada.',
+            'Soal bergambar tidak ikut terbawa di file ini, karena gambar perlu diunggah satu per satu lewat tombol Tambah Soal.',
+            'Jangan mengubah nama sheet dan judul kolom di baris pertama.',
+        ] as $note) {
+            $sheet->setCellValue('C'.$row, $note);
+            $row++;
+        }
+
+        $sheet->getStyle('C1:C'.$row)->getAlignment()->setWrapText(true)->setVertical(Alignment::VERTICAL_TOP);
+        $sheet->setSelectedCell('B2');
+    }
+
     private function buildGuideSheet(Worksheet $sheet, ExamSection $section): void
     {
         $sheet->setTitle('Petunjuk');
@@ -152,6 +268,7 @@ class QuestionImportTemplate
             'Kolom Kunci Jawaban sudah ada pilihannya, cukup klik panah dropdown.',
             'Sheet "Contoh" berisi soal '.strtolower($section->name).' yang sudah terisi sebagai acuan. Tidak perlu dihapus, sheet itu diabaikan saat import.',
             'Simpan file (Ctrl+S), lalu unggah lewat tombol Import Soal pada subtes '.$section->name.'.',
+            'Mau sekalian subtes lain? Tambahkan sheet baru dan beri nama sesuai subtesnya (Verbal, Kuantitatif, Logika, Spasial). Tiap sheet masuk ke subtesnya sendiri dalam sekali unggah.',
         ] as $index => $step) {
             $sheet->setCellValue('B'.$row, 'Langkah '.($index + 1));
             $sheet->getStyle('B'.$row)->getFont()->setBold(true);
@@ -241,7 +358,9 @@ class QuestionImportTemplate
         foreach ([
             'Import bersifat semua-atau-tidak-sama-sekali. Kalau ada satu baris salah, tidak ada soal yang tersimpan.',
             'Pertanyaan dan keempat pilihan jawaban wajib diisi semua.',
-            'Jangan mengganti nama sheet "'.$section->name.'". Nama sheet itu dipakai sistem untuk memastikan file masuk ke subtes yang benar.',
+            'Nomor Urut tidak menimpa soal yang sudah ada di sistem. Soal hasil import selalu ditambahkan di belakang.',
+            'Jangan mengganti nama sheet "'.$section->name.'". Nama sheet itulah yang menentukan soal masuk ke subtes mana.',
+            'Kalau satu file memuat beberapa sheet, tiap sheet dinilai sendiri. Sheet yang bersih tersimpan, sheet bermasalah ditolak tanpa menggagalkan yang lain.',
             'Jangan mengubah, menghapus, atau menukar urutan judul kolom di baris pertama.',
             'Untuk file besar, coba dulu dengan 3-5 baris. Kalau berhasil, baru unggah semuanya.',
         ] as $note) {
@@ -253,7 +372,8 @@ class QuestionImportTemplate
         $sheet->setSelectedCell('B2');
     }
 
-    private function buildQuestionSheet(Worksheet $sheet, ExamSection $section, bool $isWorkSheet): void
+    /** @param  array<int, array<int, string|int|null>>|null  $dataRows */
+    private function buildQuestionSheet(Worksheet $sheet, ExamSection $section, bool $isWorkSheet, ?array $dataRows = null): void
     {
         // Nama sheet = nama subtes. Dipakai sistem saat import untuk memastikan
         // template tidak tertukar antar subtes.
@@ -292,13 +412,13 @@ class QuestionImportTemplate
 
         $sheet->freezePane('B2');
 
-        if ($isWorkSheet) {
+        if ($isWorkSheet && $dataRows === null) {
             $sheet->setSelectedCell('A2');
 
             return;
         }
 
-        $samples = self::SAMPLE_ROWS[$section->code] ?? self::FALLBACK_SAMPLE;
+        $samples = $dataRows ?? (self::SAMPLE_ROWS[$section->code] ?? self::FALLBACK_SAMPLE);
         foreach ($samples as $index => $values) {
             $row = $index + 2;
             foreach ($values as $columnIndex => $value) {
@@ -314,6 +434,12 @@ class QuestionImportTemplate
                 $sheet->getStyle('A'.$row.':'.$lastColumn.$row)->getFill()
                     ->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB(self::COLOR_BAND);
             }
+        }
+
+        if ($dataRows !== null) {
+            $sheet->setSelectedCell('A2');
+
+            return;
         }
 
         $noteRow = count($samples) + 3;
