@@ -8,7 +8,33 @@ env:
   DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
 
 jobs:
+  changes:
+    runs-on: self-hosted
+    outputs:
+      composer: ${{ steps.diff.outputs.composer }}
+      migrations: ${{ steps.diff.outputs.migrations }}
+    steps:
+      - name: Detect changed paths
+        id: diff
+        run: |
+          cd "$DEPLOY_PATH"
+          git fetch origin dev --quiet
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          changed() {
+            if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo true
+            elif git diff --name-only "$BEFORE" "$AFTER" -- "$1" | grep -q .; then
+              echo true
+            else
+              echo false
+            fi
+          }
+          echo "composer=$(changed composer.lock)" >> "$GITHUB_OUTPUT"
+          echo "migrations=$(changed database/migrations)" >> "$GITHUB_OUTPUT"
+
   deploy:
+    needs: changes
     runs-on: self-hosted
     steps:
       - name: Pull latest code
@@ -21,31 +47,23 @@ jobs:
           cd "$DEPLOY_PATH"
           docker compose -f docker-compose.dev.yml up -d --build
 
+      - name: Sync composer dependencies
+        if: needs.changes.outputs.composer == 'true'
+        run: |
+          cd "$DEPLOY_PATH"
+          docker compose -f docker-compose.dev.yml exec -T tpka_app composer install --no-interaction
+
       - name: Fix storage permissions
         run: |
           cd "$DEPLOY_PATH"
           docker compose -f docker-compose.dev.yml exec -T -u root tpka_app chmod -R a+rwX storage bootstrap/cache
 
   migrate:
-    needs: deploy
+    needs: [changes, deploy]
+    if: needs.changes.outputs.migrations == 'true'
     runs-on: self-hosted
     steps:
-      - name: Check if migrations changed
-        id: check
-        run: |
-          cd "$DEPLOY_PATH"
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
-          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "run_migrate=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "$BEFORE" "$AFTER" -- database/migrations | grep -q .; then
-            echo "run_migrate=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_migrate=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run migrations
-        if: steps.check.outputs.run_migrate == 'true'
         run: |
           cd "$DEPLOY_PATH"
           docker compose -f docker-compose.dev.yml exec -T tpka_app php artisan migrate --force
