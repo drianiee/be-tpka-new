@@ -29,7 +29,7 @@ class AuthController extends Controller
             ], 403);
         }
 
-        return ['user' => $user, 'token' => $user->createToken('frontend')->plainTextToken, 'requires_profile_completion' => $user->role === 'peserta' && ! $user->profile_completed_at];
+        return ['user' => $user, 'token' => $user->createSessionToken(), 'requires_profile_completion' => $user->role === 'peserta' && ! $user->profile_completed_at];
     }
 
     public function register(Request $request)
@@ -54,7 +54,7 @@ class AuthController extends Controller
             'message' => 'Email berhasil diverifikasi.',
             'next' => '/complete-profile',
             'user' => $user,
-            'token' => $user->createToken('frontend')->plainTextToken,
+            'token' => $user->createSessionToken(),
         ];
     }
 

@@ -78,7 +78,7 @@ class PartnerOnboardingController extends Controller
         return [
             'message' => 'Onboarding berhasil.',
             'user' => $user->fresh(),
-            'token' => $user->createToken('frontend')->plainTextToken,
+            'token' => $user->createSessionToken(),
             'schedule_id' => $invitation->schedule_id,
             'partner' => $invitation->schedule->partner ? ['id' => $invitation->schedule->partner->id, 'name' => $invitation->schedule->partner->name] : null,
             'package_id' => ExamRegistration::where('user_id', $user->id)->where('schedule_id', $invitation->schedule_id)->value('question_package_id'),

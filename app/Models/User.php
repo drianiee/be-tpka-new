@@ -33,4 +33,12 @@ class User extends Authenticatable
             'profile_completed_at' => 'datetime',
         ];
     }
+
+    /** Token login dengan tenggat idle; digeser tiap request oleh RefreshSessionExpiry. */
+    public function createSessionToken(string $name = 'frontend'): string
+    {
+        $idleMinutes = (int) config('sanctum.idle_expiration');
+
+        return $this->createToken($name, ['*'], $idleMinutes > 0 ? now()->addMinutes($idleMinutes) : null)->plainTextToken;
+    }
 }
