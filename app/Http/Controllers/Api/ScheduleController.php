@@ -21,6 +21,12 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Style\Alignment;
+use PhpOffice\PhpSpreadsheet\Style\Border;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
+use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 
 class ScheduleController extends Controller
 {
@@ -210,6 +216,31 @@ class ScheduleController extends Controller
         ];
     }
 
+    public function grantResume(Request $request, Schedule $schedule, int $userId)
+    {
+        $registration = ExamRegistration::where('schedule_id', $schedule->id)
+            ->where('user_id', $userId)
+            ->firstOrFail();
+
+        abort_if($registration->access_status !== 'unlocked', 422, 'Peserta belum memiliki akses ujian.');
+        abort_unless(in_array($registration->status, ['paid', 'approved'], true), 422, 'Peserta belum siap mengikuti ujian.');
+
+        $this->examAttemptService->resumeAttempt($registration, $request->user());
+
+        return [
+            'message' => 'Peserta diizinkan melanjutkan ujian dengan sisa waktu saat terhenti.',
+            'schedule' => $this->legacy($schedule->fresh([
+                'package.sections',
+                'partner',
+                'registrations.user',
+                'registrations.package',
+                'registrations.payment',
+                'registrations.payments',
+                'attempts.scores',
+            ])),
+        ];
+    }
+
     public function importPartnerParticipants(Request $request, Schedule $schedule, PartnerInvitationService $invitations)
     {
         abort_if(now()->greaterThanOrEqualTo($schedule->start_at), 422, 'Peserta tidak dapat diimport setelah waktu tes dimulai.');
@@ -381,6 +412,8 @@ class ScheduleController extends Controller
                 'certificate_revoked_at' => $r->certificate_revoked_at?->toISOString(),
                 'certificate_download_url' => $certificate['download_url'] ?? null,
                 'can_retake' => ! $r->certificate_issued_at,
+                'can_resume' => ! $r->certificate_issued_at && $this->examAttemptService->resumableAttempt($r) !== null,
+                'last_violation' => $this->lastViolationPayload($attempt),
             ];
         })->values(), 'current_page' => $participantPage?->currentPage() ?? 1, 'last_page' => $participantPage?->lastPage() ?? 1, 'per_page' => $participantPage?->perPage() ?? 100, 'total' => $participantPage?->total() ?? $s->registrations()->count(), 'from' => $participantPage?->firstItem(), 'to' => $participantPage?->lastItem()]];
     }
@@ -534,6 +567,28 @@ class ScheduleController extends Controller
         return $registration->relationLoaded('payment') ? $registration->payment : $registration->payment()->first();
     }
 
+    private function lastViolationPayload(?ExamAttempt $attempt): ?array
+    {
+        if (! $attempt) {
+            return null;
+        }
+        $meta = $attempt->metadata ?? [];
+        if (($meta['termination_reason'] ?? null) !== 'violation') {
+            return null;
+        }
+
+        return [
+            'reason' => $meta['violation_reason'] ?? null,
+            'violated_at' => $meta['violated_at'] ?? null,
+            'remaining_ms' => (int) ($meta['remaining_ms_at_violation'] ?? 0),
+            'answered_count' => (int) ($meta['answered_count_at_violation'] ?? 0),
+            'total_questions' => $attempt->attemptQuestions()->count(),
+            'heartbeat_gap_seconds' => $meta['heartbeat_gap_seconds'] ?? null,
+            'network_suspect' => (bool) ($meta['network_suspect'] ?? false),
+            'resume_count' => (int) ($meta['resume_count'] ?? 0),
+        ];
+    }
+
     private function participantStatusMeta(ExamRegistration $registration, ?ExamAttempt $attempt, bool $isPartnerSchedule, ?Payment $payment): array
     {
         $terminationReason = strtolower((string) ($attempt?->metadata['termination_reason'] ?? ''));
@@ -542,7 +597,9 @@ class ScheduleController extends Controller
         }
 
         if ($terminationReason === 'violation') {
-            return ['label' => 'Selesai dengan pelanggaran', 'variant' => 'warning'];
+            return ! empty($attempt->metadata['network_suspect'])
+                ? ['label' => 'Terhenti (indikasi koneksi)', 'variant' => 'warning']
+                : ['label' => 'Selesai dengan pelanggaran', 'variant' => 'warning'];
         }
 
         if ($attempt && in_array($attempt->status, ['submitted', 'expired'], true)) {
@@ -602,10 +659,52 @@ class ScheduleController extends Controller
 
     private function createPartnerImportTemplateXlsx(): string
     {
-        return $this->createXlsxFile([
-            ['name', 'email'],
-            ['Contoh Peserta', 'peserta@example.com'],
-        ], 'Peserta Mitra', 'partner-import-template-');
+        $spreadsheet = new Spreadsheet;
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Peserta Mitra');
+
+        $columns = ['name' => 36, 'email' => 44];
+        $lastRow = 501;
+        $lastColumn = 'B';
+
+        foreach (array_keys($columns) as $index => $column) {
+            $letter = chr(ord('A') + $index);
+            $sheet->setCellValue($letter.'1', $column);
+            $sheet->getColumnDimension($letter)->setWidth($columns[$column]);
+        }
+
+        // Baris contoh. Alamat ini dikenali dan dilewati importer, jadi aman kalau lupa dihapus.
+        $sheet->setCellValue('A2', 'Contoh Peserta');
+        $sheet->setCellValue('B2', PartnerInvitationService::TEMPLATE_SAMPLE_EMAIL);
+
+        $header = $sheet->getStyle('A1:'.$lastColumn.'1');
+        $header->getFont()->setBold(true)->setSize(11)->getColor()->setARGB('FFFFFFFF');
+        $header->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF1E3A8A');
+        $header->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER)->setVertical(Alignment::VERTICAL_CENTER);
+        $sheet->getRowDimension(1)->setRowHeight(30);
+
+        $body = $sheet->getStyle('A2:'.$lastColumn.$lastRow);
+        $body->getAlignment()->setVertical(Alignment::VERTICAL_CENTER);
+        $body->getNumberFormat()->setFormatCode(NumberFormat::FORMAT_TEXT);
+        for ($row = 2; $row <= $lastRow; $row++) {
+            $sheet->getRowDimension($row)->setRowHeight(22);
+        }
+
+        $sheet->getStyle('A1:'.$lastColumn.$lastRow)->getBorders()->getAllBorders()
+            ->setBorderStyle(Border::BORDER_THIN)->getColor()->setARGB('FFCBD5E1');
+
+        $sheet->freezePane('A2');
+        $sheet->setSelectedCell('A3');
+
+        $path = tempnam(sys_get_temp_dir(), 'partner-import-template-');
+        if ($path === false) {
+            abort(500, 'Gagal membuat file template.');
+        }
+
+        (new Xlsx($spreadsheet))->save($path);
+        $spreadsheet->disconnectWorksheets();
+
+        return $path;
     }
 
     private function createXlsxFile(array $rows, string $sheetName, string $prefix = 'xlsx-export-'): string

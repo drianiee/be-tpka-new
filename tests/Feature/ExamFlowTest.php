@@ -317,6 +317,118 @@ class ExamFlowTest extends TestCase
         }
     }
 
+    public function test_admin_can_resume_violated_attempt_with_remaining_time_and_answers_kept(): void
+    {
+        try {
+            Carbon::setTestNow('2026-06-29 08:10:00');
+            $this->seed(DatabaseSeeder::class);
+            $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+            $admin = User::where('role', 'administrator')->firstOrFail();
+            $schedule = $this->createExamFixture($participant);
+
+            $attempt = $this->actingAs($participant, 'sanctum')
+                ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
+                ->assertSuccessful();
+            $attemptId = $attempt->json('id');
+            $questionId = $attempt->json('questions.0.id');
+            $correctOption = QuestionOption::where('question_id', $questionId)->where('is_correct', true)->firstOrFail();
+            $this->putJson("/api/participant/attempts/{$attemptId}/answers/{$questionId}", ['question_option_id' => $correctOption->id])
+                ->assertOk();
+
+            // Heartbeat terakhir 2 menit sebelum kejadian => indikasi koneksi bermasalah.
+            $this->postJson("/api/participant/attempts/{$attemptId}/heartbeat")->assertOk();
+            Carbon::setTestNow('2026-06-29 08:12:00');
+            $this->postJson("/api/participant/attempts/{$attemptId}/violation", [
+                'reason' => 'fullscreen_exit',
+                'context' => ['event' => 'fullscreenchange'],
+            ])->assertOk()->assertJsonPath('status', 'submitted');
+
+            $violated = ExamAttempt::findOrFail($attemptId);
+            $this->assertTrue($violated->metadata['network_suspect']);
+            $this->assertSame(120, $violated->metadata['heartbeat_gap_seconds']);
+            $this->assertSame(1, $violated->metadata['answered_count_at_violation']);
+            // Jadwal: start 08:05, durasi 30 menit tapi dipotong end_at 08:35 => sisa 23 menit saat 08:12.
+            $this->assertSame(23 * 60 * 1000, $violated->metadata['remaining_ms_at_violation']);
+
+            $detail = $this->actingAs($admin, 'sanctum')
+                ->getJson("/api/schedules/{$schedule->id}")
+                ->assertOk();
+            $row = collect($detail->json('participants.data'))->firstWhere('id', $participant->id);
+            $this->assertTrue($row['can_resume']);
+            $this->assertTrue($row['last_violation']['network_suspect']);
+            $this->assertSame('Terhenti (indikasi koneksi)', $row['status_label']);
+
+            // Admin melanjutkan 1 jam kemudian, setelah jadwal berakhir.
+            Carbon::setTestNow('2026-06-29 09:12:00');
+            $this->actingAs($admin, 'sanctum')
+                ->postJson("/api/schedules/{$schedule->id}/participants/{$participant->id}/resume")
+                ->assertOk()
+                ->assertJsonPath('message', 'Peserta diizinkan melanjutkan ujian dengan sisa waktu saat terhenti.');
+
+            $resumed = ExamAttempt::findOrFail($attemptId);
+            $this->assertSame('in_progress', $resumed->status);
+            $this->assertNull($resumed->score_total);
+            $this->assertSame(0, $resumed->scores()->count());
+            $this->assertSame(60 * 60 * 1000, $resumed->metadata['paused_ms']);
+            $this->assertSame(1, $resumed->metadata['resume_count']);
+            $this->assertTrue($resumed->metadata['resume_pending']);
+            $this->assertArrayNotHasKey('termination_reason', $resumed->metadata);
+            $this->assertCount(1, $resumed->metadata['violation_history']);
+
+            // Peserta baru membuka attempt 18 menit kemudian: sisa waktu 23 menit
+            // dihitung dari saat dibuka, jawaban masih ada, dan bisa lanjut menjawab.
+            Carbon::setTestNow('2026-06-29 09:30:00');
+            $show = $this->actingAs($participant, 'sanctum')
+                ->getJson("/api/participant/attempts/{$attemptId}")
+                ->assertOk()
+                ->assertJsonPath('status', 'in_progress')
+                ->assertJsonPath('expires_at', now()->copy()->addMinutes(23)->toISOString())
+                ->assertJsonPath('paused_ms', 78 * 60 * 1000)
+                ->assertJsonPath('answers.0.question_option_id', $correctOption->id);
+            $this->assertArrayNotHasKey('resume_pending', ExamAttempt::findOrFail($attemptId)->metadata);
+            $this->assertDatabaseHas('attempt_events', ['exam_attempt_id' => $attemptId, 'type' => 'resume_activated']);
+            $mySchedule = $this->getJson("/api/participant/my-schedules/{$schedule->id}")->assertOk();
+            $this->assertSame($attemptId, $mySchedule->json('attempt_id'));
+            $this->assertSame(1, $mySchedule->json('attempt_resume_count'));
+
+            $secondQuestionId = $show->json('questions.1.id');
+            $secondCorrect = QuestionOption::where('question_id', $secondQuestionId)->where('is_correct', true)->firstOrFail();
+            $this->putJson("/api/participant/attempts/{$attemptId}/answers/{$secondQuestionId}", ['question_option_id' => $secondCorrect->id])
+                ->assertOk();
+            $this->postJson("/api/participant/attempts/{$attemptId}/submit")
+                ->assertOk()
+                ->assertJsonPath('status', 'submitted')
+                ->assertJsonPath('score_total', 800);
+
+            // Sudah selesai normal => tidak bisa dilanjutkan lagi.
+            $this->actingAs($admin, 'sanctum')
+                ->postJson("/api/schedules/{$schedule->id}/participants/{$participant->id}/resume")
+                ->assertStatus(422);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_heartbeat_records_connection_events(): void
+    {
+        $this->seed(DatabaseSeeder::class);
+        $participant = User::where('email', 'peserta@tpka.com')->firstOrFail();
+        $schedule = $this->createExamFixture($participant);
+
+        $attemptId = $this->actingAs($participant, 'sanctum')
+            ->postJson("/api/participant/schedules/{$schedule->id}/attempts")
+            ->assertSuccessful()
+            ->json('id');
+
+        $this->postJson("/api/participant/attempts/{$attemptId}/heartbeat", [
+            'event' => 'connection_restored',
+            'payload' => ['offline_ms' => 42000, 'offline_events' => [['reason' => 'tab_hidden']]],
+        ])->assertOk();
+
+        $this->assertDatabaseHas('attempt_events', ['exam_attempt_id' => $attemptId, 'type' => 'connection_restored']);
+        $this->postJson("/api/participant/attempts/{$attemptId}/heartbeat", ['event' => 'bogus'])->assertStatus(422);
+    }
+
     public function test_participant_can_start_retake_after_original_schedule_end(): void
     {
         try {

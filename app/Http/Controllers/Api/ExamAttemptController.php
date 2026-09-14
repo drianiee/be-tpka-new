@@ -23,6 +23,7 @@ class ExamAttemptController extends Controller
     public function show(Request $request, ExamAttempt $attempt)
     {
         $this->owner($request, $attempt);
+        $attempt = $this->service->activateResumedAttempt($attempt);
         if ($attempt->status === 'in_progress' && now()->greaterThanOrEqualTo($attempt->expires_at)) {
             $attempt = $this->service->submit($attempt, true);
         }
@@ -53,7 +54,19 @@ class ExamAttemptController extends Controller
     public function heartbeat(Request $request, ExamAttempt $attempt)
     {
         $this->owner($request, $attempt);
-        AttemptEvent::create(['exam_attempt_id' => $attempt->id, 'type' => 'heartbeat', 'ip_address' => $request->ip(), 'user_agent' => $request->userAgent()]);
+        $data = $request->validate([
+            'event' => ['nullable', 'string', 'in:connection_lost,connection_restored'],
+            'payload' => ['nullable', 'array'],
+        ]);
+        // Client memakai heartbeat juga untuk melaporkan koneksi putus/pulih (beserta
+        // event tab/fullscreen yang terjadi selama offline) supaya admin punya jejak audit.
+        AttemptEvent::create([
+            'exam_attempt_id' => $attempt->id,
+            'type' => $data['event'] ?? 'heartbeat',
+            'payload' => $data['payload'] ?? null,
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+        ]);
 
         return ['server_time' => now()->toISOString(), 'expires_at' => $attempt->expires_at->toISOString(), 'status' => $attempt->status];
     }

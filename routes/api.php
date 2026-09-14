@@ -62,6 +62,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('schedules/{schedule}/participants', [ScheduleController::class, 'addParticipant']);
         Route::delete('schedules/{schedule}/participants/{userId}', [ScheduleController::class, 'removeParticipant']);
         Route::post('schedules/{schedule}/participants/{userId}/retake', [ScheduleController::class, 'grantRetake']);
+        Route::post('schedules/{schedule}/participants/{userId}/resume', [ScheduleController::class, 'grantResume']);
         Route::get('schedules/{schedule}/participants/export', [ScheduleController::class, 'exportParticipants']);
         Route::get('schedules/{schedule}/partner/import-template', [ScheduleController::class, 'partnerImportTemplate']);
         Route::post('schedules/{schedule}/partner/import', [ScheduleController::class, 'importPartnerParticipants']);
@@ -188,6 +189,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('operators/{operator}', [OperatorController::class, 'show']);
         Route::match(['put', 'patch'], 'operators/{operator}', [OperatorController::class, 'update']);
         Route::patch('operators/{operator}/status', [OperatorController::class, 'status']);
+        Route::patch('operators/{operator}/password', [OperatorController::class, 'updatePassword']);
         Route::delete('operators/{operator}', [OperatorController::class, 'destroy']);
     });
 

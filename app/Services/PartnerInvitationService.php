@@ -18,6 +18,8 @@ use ZipArchive;
 
 class PartnerInvitationService
 {
+    public const TEMPLATE_SAMPLE_EMAIL = 'peserta@example.com';
+
     public function __construct(
         private QuestionPackageAssignmentService $packageAssignments,
         private CertificateAssignmentService $certificates,
@@ -120,7 +122,8 @@ class PartnerInvitationService
             foreach ($rows as $row) {
                 $email = strtolower(trim((string) ($row['email'] ?? '')));
                 $name = trim((string) ($row['name'] ?? ''));
-                if ($email === '' || ! filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '') {
+                // Baris contoh bawaan template yang lupa dihapus tidak boleh mengundang siapa pun.
+                if ($email === '' || ! filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || $email === self::TEMPLATE_SAMPLE_EMAIL) {
                     $summary['skipped_rows']++;
 
                     continue;

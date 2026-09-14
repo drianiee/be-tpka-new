@@ -33,10 +33,26 @@ class OperatorController extends Controller
         $d = $r->validate([
             'name' => 'required|string',
             'email' => 'required|email|unique:users',
-            'password' => ['required', Password::min(8)->mixedCase()->numbers()],
+            'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
         ]);
 
         return response()->json(['message' => 'Operator dibuat.', 'operator' => User::create([...$d, 'role' => 'operator', 'is_active' => true])], 201);
+    }
+
+    public function updatePassword(Request $r, User $operator)
+    {
+        abort_unless($operator->role === 'operator', 404);
+
+        $d = $r->validate([
+            'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
+        ]);
+
+        $operator->update(['password' => $d['password']]);
+
+        // Sesi lama operator dicabut supaya password baru langsung berlaku.
+        $operator->tokens()->delete();
+
+        return ['message' => 'Password operator diperbarui.'];
     }
 
     public function show(User $operator)

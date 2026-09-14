@@ -10,11 +10,15 @@ use App\Models\ExamScore;
 use App\Models\QuestionOption;
 use App\Models\Schedule;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class ExamAttemptService
 {
+    /** Gap heartbeat (detik) yang dianggap indikasi koneksi bermasalah. Heartbeat normal tiap 30 detik. */
+    public const NETWORK_SUSPECT_GAP_SECONDS = 75;
+
     public function __construct(private QuestionPackageAssignmentService $packageAssignments) {}
 
     public function start(User $user, Schedule $schedule): ExamAttempt
@@ -157,11 +161,36 @@ class ExamAttemptService
             }
 
             $scores = $this->scoreAttempt($locked);
+            $violatedAt = now();
+            $lastHeartbeatAt = AttemptEvent::where('exam_attempt_id', $locked->id)
+                ->whereIn('type', ['heartbeat', 'started', 'resume_granted', 'connection_restored'])
+                ->latest('id')
+                ->value('created_at');
+            $heartbeatGapSeconds = $lastHeartbeatAt ? (int) Carbon::parse($lastHeartbeatAt)->diffInSeconds($violatedAt) : null;
+            $reportDelaySeconds = null;
+            if (! empty($context['client_time'])) {
+                try {
+                    $reportDelaySeconds = (int) abs($violatedAt->diffInSeconds(Carbon::parse($context['client_time'])));
+                } catch (\Throwable) {
+                    $reportDelaySeconds = null;
+                }
+            }
+            // Heartbeat normalnya tiap 30 detik. Gap yang jauh lebih lama, atau laporan
+            // yang sampai ke server jauh setelah kejadian, adalah indikasi kuat koneksi
+            // peserta bermasalah, bukan pelanggaran yang disengaja.
+            $networkSuspect = ($heartbeatGapSeconds !== null && $heartbeatGapSeconds > self::NETWORK_SUSPECT_GAP_SECONDS)
+                || ($reportDelaySeconds !== null && $reportDelaySeconds > self::NETWORK_SUSPECT_GAP_SECONDS)
+                || ! empty($context['offline_events']);
+
             $metadata = array_merge($locked->metadata ?? [], [
                 'termination_reason' => 'violation',
                 'violation_reason' => $reason,
-                'violated_at' => now()->toISOString(),
+                'violated_at' => $violatedAt->toISOString(),
                 'violation_context' => $context,
+                'remaining_ms_at_violation' => max(0, (int) $violatedAt->diffInMilliseconds($locked->expires_at, false)),
+                'answered_count_at_violation' => $locked->answers()->whereNotNull('question_option_id')->count(),
+                'heartbeat_gap_seconds' => $heartbeatGapSeconds,
+                'network_suspect' => $networkSuspect,
             ]);
 
             $locked->update([
@@ -228,6 +257,155 @@ class ExamAttemptService
             ])->save();
 
             return $lockedRegistration->fresh();
+        });
+    }
+
+    /**
+     * Attempt terakhir peserta yang berhenti karena pelanggaran dan masih bisa dilanjutkan.
+     * Null jika attempt terakhir masih berjalan, selesai normal, atau sisa waktunya sudah habis.
+     */
+    public function resumableAttempt(ExamRegistration $registration): ?ExamAttempt
+    {
+        $attempt = ExamAttempt::where('user_id', $registration->user_id)
+            ->where('schedule_id', $registration->schedule_id)
+            ->latest('id')
+            ->first();
+
+        if (! $attempt || $attempt->status !== 'submitted') {
+            return null;
+        }
+        if (($attempt->metadata['termination_reason'] ?? null) !== 'violation') {
+            return null;
+        }
+        if ((int) ($attempt->metadata['remaining_ms_at_violation'] ?? 0) <= 0) {
+            return null;
+        }
+
+        return $attempt;
+    }
+
+    /**
+     * Dipanggil saat peserta membuka attempt yang baru dilanjutkan admin: mulai hitung
+     * sisa waktu dari sekarang dan tambahkan jeda menunggu ke paused_ms.
+     */
+    public function activateResumedAttempt(ExamAttempt $attempt): ExamAttempt
+    {
+        if ($attempt->status !== 'in_progress' || empty($attempt->metadata['resume_pending'])) {
+            return $attempt;
+        }
+
+        return DB::transaction(function () use ($attempt) {
+            $locked = ExamAttempt::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+            $metadata = $locked->metadata ?? [];
+            if (empty($metadata['resume_pending'])) {
+                return $locked;
+            }
+
+            $activatedAt = now();
+            $remainingMs = (int) ($metadata['resume_remaining_ms'] ?? 0);
+            $resumedAt = Carbon::parse($metadata['last_resumed_at'] ?? $activatedAt);
+            $waitedMs = max(0, (int) $resumedAt->diffInMilliseconds($activatedAt, false));
+
+            unset($metadata['resume_pending'], $metadata['resume_remaining_ms']);
+            $metadata['paused_ms'] = (int) ($metadata['paused_ms'] ?? 0) + $waitedMs;
+            $metadata['last_resume_activated_at'] = $activatedAt->toISOString();
+
+            $locked->update([
+                'expires_at' => $activatedAt->copy()->addMilliseconds($remainingMs),
+                'metadata' => $metadata,
+            ]);
+
+            AttemptEvent::create([
+                'exam_attempt_id' => $locked->id,
+                'type' => 'resume_activated',
+                'payload' => ['waited_ms' => $waitedMs, 'remaining_ms' => $remainingMs],
+            ]);
+
+            return $locked->fresh();
+        });
+    }
+
+    /**
+     * Lanjutkan attempt yang berhenti karena pelanggaran: jawaban dipertahankan,
+     * sisa waktu saat terhenti dikembalikan, skor dihapus supaya dihitung ulang saat submit.
+     */
+    public function resumeAttempt(ExamRegistration $registration, ?User $actor = null): ExamAttempt
+    {
+        return DB::transaction(function () use ($registration, $actor) {
+            $lockedRegistration = ExamRegistration::whereKey($registration->id)->lockForUpdate()->firstOrFail();
+            throw_if(
+                $lockedRegistration->certificate_issued_at,
+                ValidationException::withMessages(['certificate' => 'Peserta tidak dapat melanjutkan tes karena sertifikat sudah pernah diterbitkan.'])
+            );
+
+            $attempt = $this->resumableAttempt($lockedRegistration);
+            throw_unless(
+                $attempt,
+                ValidationException::withMessages(['attempt' => 'Tidak ada attempt yang bisa dilanjutkan. Attempt terakhir masih berjalan, selesai secara normal, atau sisa waktunya sudah habis. Gunakan Ulangi Tes.'])
+            );
+
+            $locked = ExamAttempt::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+            $resumeTime = now();
+            $violatedAt = Carbon::parse($locked->metadata['violated_at']);
+            $remainingMs = (int) $locked->metadata['remaining_ms_at_violation'];
+            $pausedMs = max(0, (int) $violatedAt->diffInMilliseconds($resumeTime, false));
+            $metadata = $locked->metadata ?? [];
+
+            $history = $metadata['violation_history'] ?? [];
+            $history[] = [
+                'reason' => $metadata['violation_reason'] ?? null,
+                'violated_at' => $metadata['violated_at'] ?? null,
+                'network_suspect' => (bool) ($metadata['network_suspect'] ?? false),
+                'resumed_at' => $resumeTime->toISOString(),
+                'resumed_by' => $actor?->id,
+            ];
+            unset(
+                $metadata['termination_reason'],
+                $metadata['violation_reason'],
+                $metadata['violated_at'],
+                $metadata['violation_context'],
+                $metadata['remaining_ms_at_violation'],
+                $metadata['answered_count_at_violation'],
+                $metadata['heartbeat_gap_seconds'],
+                $metadata['network_suspect'],
+            );
+            $metadata['violation_history'] = $history;
+            $metadata['paused_ms'] = (int) ($metadata['paused_ms'] ?? 0) + $pausedMs;
+            $metadata['resume_count'] = (int) ($metadata['resume_count'] ?? 0) + 1;
+            $metadata['last_resumed_at'] = $resumeTime->toISOString();
+            $metadata['last_resumed_by'] = $actor?->id;
+            // Sisa waktu baru benar-benar berjalan saat peserta membuka kembali attempt
+            // (lihat activateResumedAttempt), bukan saat admin menekan tombol.
+            $metadata['resume_pending'] = true;
+            $metadata['resume_remaining_ms'] = $remainingMs;
+
+            $locked->scores()->delete();
+            $locked->update([
+                'status' => 'in_progress',
+                'submitted_at' => null,
+                'score_total' => null,
+                'score_breakdown' => null,
+                'expires_at' => $resumeTime->copy()->addMilliseconds($remainingMs),
+                'metadata' => $metadata,
+            ]);
+
+            // Izin ulangi tes yang belum terpakai dibatalkan supaya tidak bentrok dengan attempt yang dilanjutkan.
+            if ($this->hasPendingRetake($lockedRegistration)) {
+                $lockedRegistration->forceFill(['retake_consumed_at' => $resumeTime])->save();
+            }
+
+            AttemptEvent::create([
+                'exam_attempt_id' => $locked->id,
+                'type' => 'resume_granted',
+                'payload' => [
+                    'granted_by' => $actor?->id,
+                    'granted_at' => $resumeTime->toISOString(),
+                    'paused_ms' => $pausedMs,
+                    'remaining_ms' => $remainingMs,
+                ],
+            ]);
+
+            return $locked->fresh();
         });
     }
 

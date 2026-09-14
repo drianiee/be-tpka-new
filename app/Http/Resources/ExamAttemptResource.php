@@ -19,6 +19,8 @@ class ExamAttemptResource extends JsonResource
             'server_time' => now()->toISOString(),
             'started_at' => $this->started_at->toISOString(),
             'expires_at' => $this->expires_at->toISOString(),
+            'paused_ms' => (int) ($this->metadata['paused_ms'] ?? 0),
+            'resume_count' => (int) ($this->metadata['resume_count'] ?? 0),
             'schedule' => ['id' => $this->schedule->id, 'title' => $this->schedule->title, 'start_at' => $this->schedule->start_at->toISOString(), 'end_at' => $this->schedule->end_at->toISOString()],
             'question_package' => ['id' => $this->package->id, 'name' => $this->package->name, 'total_duration_minutes' => $this->package->total_duration_minutes, 'total_questions' => $this->package->total_questions],
             'sections' => $this->package->sections->map(fn ($s) => ['id' => $s->id, 'name' => $s->name, 'description' => $s->description, 'order_number' => $s->order_number, 'duration_minutes' => $s->duration_minutes, 'question_count' => $s->question_count])->values(),
